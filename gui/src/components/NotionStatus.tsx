@@ -1,3 +1,4 @@
+import { authHeaders } from '../auth'
 import { useState, useEffect } from "react"
 import { useTheme } from "../theme"
 
@@ -8,7 +9,6 @@ interface NotionStatus {
   lastError: string | null
 }
 
-const AUTH_TOKEN = localStorage.getItem('boluo_auth_token') || ''
 
 export default function NotionStatus() {
   const [status, setStatus] = useState<NotionStatus | null>(null)
@@ -18,7 +18,7 @@ export default function NotionStatus() {
   const fetchStatus = async () => {
     try {
       const res = await fetch("/api/notion", {
-        headers: { 'Authorization': `Bearer ${AUTH_TOKEN}` }
+        headers: authHeaders()
       })
       if (res.ok) {
         const data = await res.json()
@@ -34,7 +34,7 @@ export default function NotionStatus() {
     try {
       await fetch("/api/notion/sync", {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${AUTH_TOKEN}` }
+        headers: authHeaders()
       })
       await fetchStatus()
     } catch (e) {

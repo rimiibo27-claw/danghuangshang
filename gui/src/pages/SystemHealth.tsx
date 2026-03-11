@@ -1,3 +1,4 @@
+import { authHeaders } from '../auth'
 import { useState, useEffect, useRef } from "react"
 import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
@@ -8,7 +9,6 @@ import { useTheme } from "../theme"
 
 interface Props { data: SystemStatus }
 
-const AUTH_TOKEN = localStorage.getItem('boluo_auth_token') || ''
 
 interface MetricPoint {
   timestamp: string
@@ -76,7 +76,7 @@ export default function SystemHealth({ data }: Props) {
 
   const fetchMetrics = async () => {
     try {
-      const h = { headers: { Authorization: `Bearer ${AUTH_TOKEN}` } }
+      const h = { headers: authHeaders() }
       const [mRes, hRes] = await Promise.all([
         fetch('/api/system/metrics', h),
         fetch('/api/health', h),

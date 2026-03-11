@@ -367,7 +367,7 @@ cat > "$CONFIG_DIR/openclaw.json" << CONFIG_EOF
       "your-provider": {
         "baseUrl": "https://your-llm-provider-api-url",
         "apiKey": "YOUR_LLM_API_KEY",
-        "api": "your-api-format",
+        "api": "openai-completions",
         "models": [
           {
             "id": "fast-model",
@@ -402,9 +402,7 @@ cat > "$CONFIG_DIR/openclaw.json" << CONFIG_EOF
         "sandbox": { "mode": "off" },
         "subagents": {
           "allowAgents": ["bingbu", "hubu", "libu", "gongbu", "libu2", "xingbu"],
-          "maxConcurrent": 4
         },
-        "runTimeoutSeconds": 600
       },
       {
         "id": "bingbu",
@@ -412,7 +410,6 @@ cat > "$CONFIG_DIR/openclaw.json" << CONFIG_EOF
         "model": { "primary": "your-provider/strong-model" },
         "identity": { "theme": "你是兵部尚书，专精软件工程、系统架构、代码审查。回答用中文，直接给方案。任务完成后主动汇报结果摘要。如需其他部门配合，通过 sessions_send 通知对方。" },
         "sandbox": { "mode": "all", "scope": "agent" },
-        "runTimeoutSeconds": 300
       },
       {
         "id": "hubu",
@@ -420,7 +417,6 @@ cat > "$CONFIG_DIR/openclaw.json" << CONFIG_EOF
         "model": { "primary": "your-provider/strong-model" },
         "identity": { "theme": "你是户部尚书，专精财务分析、成本管控、电商运营。回答用中文，数据驱动。任务完成后主动汇报数据摘要和关键发现。发现异常开支时主动告警。" },
         "sandbox": { "mode": "all", "scope": "agent" },
-        "runTimeoutSeconds": 300
       },
       {
         "id": "libu",
@@ -428,7 +424,6 @@ cat > "$CONFIG_DIR/openclaw.json" << CONFIG_EOF
         "model": { "primary": "your-provider/fast-model" },
         "identity": { "theme": "你是礼部尚书，专精品牌营销、社交媒体、内容创作。回答用中文，风格活泼。任务完成后主动汇报产出内容摘要。" },
         "sandbox": { "mode": "all", "scope": "agent" },
-        "runTimeoutSeconds": 300
       },
       {
         "id": "gongbu",
@@ -436,7 +431,6 @@ cat > "$CONFIG_DIR/openclaw.json" << CONFIG_EOF
         "model": { "primary": "your-provider/fast-model" },
         "identity": { "theme": "你是工部尚书，专精 DevOps、服务器运维、CI/CD、基础设施。回答用中文，注重实操。任务完成后主动汇报执行结果和系统状态。发现服务异常时主动告警。" },
         "sandbox": { "mode": "all", "scope": "agent" },
-        "runTimeoutSeconds": 300
       },
       {
         "id": "libu2",
@@ -444,7 +438,6 @@ cat > "$CONFIG_DIR/openclaw.json" << CONFIG_EOF
         "model": { "primary": "your-provider/fast-model" },
         "identity": { "theme": "你是吏部尚书，专精项目管理、创业孵化、团队协调。回答用中文，条理清晰。任务完成后主动汇报进度和待办事项。" },
         "sandbox": { "mode": "all", "scope": "agent" },
-        "runTimeoutSeconds": 300
       },
       {
         "id": "xingbu",
@@ -452,7 +445,6 @@ cat > "$CONFIG_DIR/openclaw.json" << CONFIG_EOF
         "model": { "primary": "your-provider/fast-model" },
         "identity": { "theme": "你是刑部尚书，专精法务合规、知识产权、合同审查。回答用中文，严谨专业。任务完成后主动汇报审查结论和风险点。发现合规问题时主动告警。" },
         "sandbox": { "mode": "all", "scope": "agent" },
-        "runTimeoutSeconds": 300
       }
     ]
   },

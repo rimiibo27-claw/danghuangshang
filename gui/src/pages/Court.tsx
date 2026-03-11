@@ -1,7 +1,7 @@
+import { authHeaders } from '../auth'
 import { useState, useEffect, useRef } from "react"
 import { useTheme } from "../theme"
 
-const AUTH_TOKEN = localStorage.getItem('boluo_auth_token') || ''
 
 interface Bot {
   id: string; name: string; displayName: string; model: string; hasToken: boolean
@@ -124,7 +124,7 @@ export default function Court() {
     setLoadingMessages(true)
     try {
       const r = await fetch(`/api/channel-messages?channel=${activeChannel}&limit=15`, {
-        headers: { Authorization: `Bearer ${AUTH_TOKEN}` }
+        headers: authHeaders()
       })
       const d = await r.json()
       setChannelMessages(d.messages || [])
@@ -135,10 +135,10 @@ export default function Court() {
 
   useEffect(() => {
     // 加载 bots
-    fetch('/api/bots', { headers: { Authorization: `Bearer ${AUTH_TOKEN}` } })
+    fetch('/api/bots', { headers: authHeaders() })
       .then(r => r.json()).then(d => setBots(d.bots || [])).catch(() => {})
     // 加载频道列表
-    fetch('/api/discord-channels', { headers: { Authorization: `Bearer ${AUTH_TOKEN}` } })
+    fetch('/api/discord-channels', { headers: authHeaders() })
       .then(r => r.json()).then(d => {
         const channels = d.channels || []
         setDiscordChannels(channels)
@@ -149,7 +149,7 @@ export default function Court() {
         }
       }).catch(() => {})
     // 加载 bot user IDs（用于正确 @mention）
-    fetch('/api/bot-user-ids', { headers: { Authorization: `Bearer ${AUTH_TOKEN}` } })
+    fetch('/api/bot-user-ids', { headers: authHeaders() })
       .then(r => r.json()).then(d => setBotUserIds(d.botUserIds || {})).catch(() => {})
   }, [])
 
@@ -171,7 +171,7 @@ export default function Court() {
     try {
       const r = await fetch('/api/command', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${AUTH_TOKEN}`, 'Content-Type': 'application/json' },
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({
           channel: activeChannel,
           message: command,

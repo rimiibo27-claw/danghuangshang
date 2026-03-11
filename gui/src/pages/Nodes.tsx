@@ -1,3 +1,4 @@
+import { authHeaders } from '../auth'
 import { useState, useEffect } from "react"
 import { useTheme } from "../theme"
 
@@ -10,7 +11,6 @@ interface Node {
   uptime: number
 }
 
-const AUTH_TOKEN = localStorage.getItem('boluo_auth_token') || ''
 
 export default function Nodes() {
   const [nodes, setNodes] = useState<Node[]>([])
@@ -20,7 +20,7 @@ export default function Nodes() {
   const fetchNodes = async () => {
     try {
       const res = await fetch("/api/nodes", {
-        headers: { 'Authorization': `Bearer ${AUTH_TOKEN}` }
+        headers: authHeaders()
       })
       if (res.ok) {
         const data = await res.json()

@@ -1,3 +1,4 @@
+import { authHeaders } from '../auth'
 import { useState, useEffect } from "react"
 import { useTheme } from "../theme"
 
@@ -10,7 +11,6 @@ interface BotAccount {
   totalTokens: number
 }
 
-const AUTH_TOKEN = localStorage.getItem('boluo_auth_token') || ''
 
 // 像素小人 SVG 组件
 const PixelAvatar = ({ status, dept }: { status: string; dept: string }) => {
@@ -85,7 +85,7 @@ export default function Office() {
   const fetchData = async () => {
     try {
       const res = await fetch('/api/status', {
-        headers: { 'Authorization': `Bearer ${AUTH_TOKEN}` }
+        headers: authHeaders()
       })
       if (res.ok) {
         const data = await res.json()
