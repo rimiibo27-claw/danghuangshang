@@ -1,0 +1,78 @@
+{
+  "id": "datang-chaotang-guard",
+  "name": "Datang Chaotang Guard",
+  "description": "Adds a reversible Cyber Tang freeze switch and hard runtime guardrails for 宣政殿 discussion-only flow.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "providerId": {
+        "type": "string"
+      },
+      "controlFile": {
+        "type": "string"
+      },
+      "stateFile": {
+        "type": "string"
+      },
+      "humanUserIds": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "resetSenderIds": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "accountUserIds": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string"
+        }
+      },
+      "protectedAccounts": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "xuanzhengdianBlockedAccounts": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "xuanzhengdianChannelId": {
+        "type": "string"
+      },
+      "xuanzhengdianProviderOverride": {
+        "type": "string"
+      },
+      "xuanzhengdianModelOverride": {
+        "type": "string"
+      },
+      "maxDiscussionTurns": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "maxDiscussionRounds": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "maxReviewCycles": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "speakerLimits": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}
