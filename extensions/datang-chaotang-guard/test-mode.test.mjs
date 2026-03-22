@@ -240,3 +240,168 @@ test("restoreTestMode restores prior protected-account states, channel users, an
     assert.equal(nextState.active, false);
   });
 });
+
+test("prepareTestMode autonomous three-province scenario keeps dianzhongsheng online with the three provinces", () => {
+  withTempHome((tempHome) => {
+    const configPath = path.join(tempHome, ".openclaw", "openclaw.json");
+    const controlFile = path.join(tempHome, ".openclaw", "control", "guard.json");
+    const stateFile = path.join(tempHome, ".openclaw", "control", "test-mode.json");
+
+    writeJson(configPath, {
+      channels: {
+        discord: {
+          guilds: {
+            "1482260119025614989": {
+              channels: {
+                "1482260425616789595": {
+                  users: ["1476931252576850095"],
+                },
+              },
+            },
+          },
+          accounts: {
+            dianzhongsheng: { enabled: false },
+            silijian: { enabled: true },
+            neige: { enabled: false },
+            shangshu: { enabled: true },
+            gongbu: { enabled: true },
+          },
+        },
+      },
+      plugins: {
+        entries: {
+          "datang-chaotang-guard": {
+            config: {
+              controlFile,
+              protectedAccounts: ["dianzhongsheng", "silijian", "neige", "shangshu", "gongbu"],
+            },
+          },
+        },
+      },
+    });
+    writeJson(controlFile, {
+      globalMute: true,
+      lastAction: "freeze",
+      updatedAt: "2026-03-20T00:00:00.000Z",
+      accountSnapshot: {
+        dianzhongsheng: false,
+        silijian: true,
+        neige: false,
+        shangshu: true,
+        gongbu: true,
+      },
+    });
+
+    const prepared = prepareTestMode({
+      action: "prepare",
+      scenario: "xuanzhengdian-three-province-autonomous",
+      configPath,
+      controlFile,
+      stateFile,
+      restart: false,
+    });
+
+    assert.equal(prepared.accountStates.dianzhongsheng, true);
+    assert.equal(prepared.accountStates.silijian, true);
+    assert.equal(prepared.accountStates.neige, true);
+    assert.equal(prepared.accountStates.shangshu, true);
+    assert.equal(prepared.accountStates.gongbu, false);
+    assert.deepEqual(prepared.channelUsers, [
+      "1476931252576850095",
+      "1478708449968656438",
+      "1482276648069107753",
+      "1482003317327659049",
+      "1482007277140709508",
+      "1482262068760416317",
+    ]);
+  });
+});
+
+test("prepareTestMode hanyuandian rollcall scenario includes dianzhongsheng and the three provinces in hanyuandian", () => {
+  withTempHome((tempHome) => {
+    const configPath = path.join(tempHome, ".openclaw", "openclaw.json");
+    const controlFile = path.join(tempHome, ".openclaw", "control", "guard.json");
+    const stateFile = path.join(tempHome, ".openclaw", "control", "test-mode.json");
+
+    writeJson(configPath, {
+      channels: {
+        discord: {
+          guilds: {
+            "1482260119025614989": {
+              channels: {
+                "1482260119457632359": {
+                  users: ["1476931252576850095"],
+                },
+              },
+            },
+          },
+          accounts: {
+            dianzhongsheng: { enabled: false },
+            silijian: { enabled: false },
+            neige: { enabled: false },
+            shangshu: { enabled: false },
+            gongbu: { enabled: true },
+          },
+        },
+      },
+      plugins: {
+        entries: {
+          "datang-chaotang-guard": {
+            config: {
+              controlFile,
+              protectedAccounts: ["dianzhongsheng", "silijian", "neige", "shangshu", "gongbu"],
+            },
+          },
+        },
+      },
+    });
+    writeJson(controlFile, {
+      globalMute: true,
+      lastAction: "freeze",
+      updatedAt: "2026-03-20T00:00:00.000Z",
+      accountSnapshot: {
+        dianzhongsheng: false,
+        silijian: false,
+        neige: false,
+        shangshu: false,
+        gongbu: true,
+      },
+    });
+
+    const prepared = prepareTestMode({
+      action: "prepare",
+      scenario: "hanyuandian-rollcall",
+      configPath,
+      controlFile,
+      stateFile,
+      restart: false,
+    });
+
+    assert.equal(prepared.accountStates.dianzhongsheng, true);
+    assert.equal(prepared.accountStates.silijian, true);
+    assert.equal(prepared.accountStates.neige, true);
+    assert.equal(prepared.accountStates.shangshu, true);
+    assert.equal(prepared.accountStates.gongbu, false);
+    assert.deepEqual(prepared.channelUsers, [
+      "1476931252576850095",
+      "1478708449968656438",
+      "1482276648069107753",
+      "1482003317327659049",
+      "1482007277140709508",
+      "1482262068760416317",
+    ]);
+
+    const nextConfig = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    assert.deepEqual(
+      nextConfig.channels.discord.guilds["1482260119025614989"].channels["1482260119457632359"].users,
+      [
+        "1476931252576850095",
+        "1478708449968656438",
+        "1482276648069107753",
+        "1482003317327659049",
+        "1482007277140709508",
+        "1482262068760416317",
+      ],
+    );
+  });
+});
