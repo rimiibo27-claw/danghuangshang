@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 
 import {
+  buildAutoCaseKey,
   PLUGIN_ID,
   extractCaseKey,
   extractCaseSummary,
@@ -16,11 +17,13 @@ import {
 } from "./shared.mjs";
 
 const CORE_THREE_PROVINCES = new Set(["silijian", "neige", "shangshu"]);
+const AUDIT_ACCOUNT_ID = "duchayuan";
 const DECISION_STATUSES = new Set([
   "REVISE_NEXT_ROUND",
   "CONSENSUS_REACHED",
   "ESCALATE_TO_HUMAN",
 ]);
+const AUDIT_VERDICTS = new Set(["PASS", "FAIL"]);
 const MAX_RECENT_INBOUND_SIGNATURES = 24;
 const ASSISTANT_TURN_RESERVATION_TTL_MS = 90_000;
 
@@ -101,6 +104,9 @@ function normalizeStoredChannelState(value) {
     return createChannelState();
   }
 
+  const storedPhase =
+    typeof value.phase === "string" && value.phase.trim() ? value.phase.trim() : "await_draft";
+
   const next = createChannelState(
     typeof value.caseKey === "string" && value.caseKey.trim() ? value.caseKey.trim() : "宣政殿待办",
     Number.isInteger(value.maxRoundsOverride) && value.maxRoundsOverride >= 1
@@ -118,12 +124,12 @@ function normalizeStoredChannelState(value) {
   next.speakerCounts = normalizeStoredCounterMap(value.speakerCounts);
   next.roundSpeakerCounts = normalizeStoredCounterMap(value.roundSpeakerCounts);
   next.expectedAccounts =
-    Array.isArray(value.expectedAccounts) && value.expectedAccounts.length > 0
+    Array.isArray(value.expectedAccounts)
       ? value.expectedAccounts.filter((entry) => typeof entry === "string" && entry.trim())
-      : next.halted
+      : next.halted || storedPhase === "closed"
         ? []
         : ["silijian"];
-  next.phase = typeof value.phase === "string" && value.phase.trim() ? value.phase.trim() : "await_draft";
+  next.phase = storedPhase;
   next.lastInbound = normalizeStoredInbound(value.lastInbound);
   next.recentInboundSignatures = Array.isArray(value.recentInboundSignatures)
     ? value.recentInboundSignatures.filter((entry) => typeof entry === "string" && entry.trim())
@@ -154,7 +160,7 @@ function getEffectiveMaxRounds(state, config) {
 
 function buildEscalationContent(state, config, reason) {
   return [
-    "宣政殿三省讨论已被守卫熔断，现停转待用户裁决。",
+    "宣政殿三省讨论已被守卫熔断，现停转待陛下裁断。",
     JSON.stringify({
       verdict: "ESCALATE_TO_HUMAN",
       case_key: state.caseKey,
@@ -165,7 +171,7 @@ function buildEscalationContent(state, config, reason) {
       speaker_counts: state.speakerCounts,
       expected_accounts: state.expectedAccounts,
       max_rounds: getEffectiveMaxRounds(state, config),
-      next_step: "await_human_reset",
+      next_step: "await_imperial_reset",
     }),
   ].join("\n");
 }
@@ -313,6 +319,14 @@ function isCoreThreeProvinceAccount(accountId) {
   return CORE_THREE_PROVINCES.has(accountId);
 }
 
+function isAuditAccount(accountId) {
+  return accountId === AUDIT_ACCOUNT_ID;
+}
+
+function isGuardedFormalAccount(accountId) {
+  return isCoreThreeProvinceAccount(accountId) || isAuditAccount(accountId);
+}
+
 function resolveSenderAccountId(senderId, config) {
   if (typeof senderId !== "string" || !senderId) return "";
   for (const [accountId, userId] of Object.entries(config.accountUserIds)) {
@@ -348,6 +362,7 @@ function getExpectedFormalStage(accountId) {
   if (accountId === "silijian") return "DRAFT";
   if (accountId === "neige") return "REVIEW";
   if (accountId === "shangshu") return "DECISION";
+  if (accountId === AUDIT_ACCOUNT_ID) return "AUDIT";
   return "";
 }
 
@@ -358,6 +373,9 @@ function isValidUpstreamFor(accountId, state) {
       inbound &&
         (inbound.isHuman ||
           inbound.isResetSender ||
+          (inbound.senderAccountId === AUDIT_ACCOUNT_ID &&
+            inbound.chainStage === "AUDIT" &&
+            inbound.status === "FAIL") ||
           (inbound.senderAccountId === "shangshu" &&
             inbound.chainStage === "DECISION" &&
             inbound.status === "REVISE_NEXT_ROUND")),
@@ -378,6 +396,15 @@ function isValidUpstreamFor(accountId, state) {
         inbound.senderAccountId === "neige" &&
         inbound.chainStage === "REVIEW" &&
         Boolean(inbound.verdict),
+    );
+  }
+
+  if (accountId === AUDIT_ACCOUNT_ID) {
+    return Boolean(
+      inbound &&
+        inbound.senderAccountId === "shangshu" &&
+        inbound.chainStage === "DECISION" &&
+        inbound.status === "CONSENSUS_REACHED",
     );
   }
 
@@ -406,7 +433,21 @@ function isInboundProgressAlreadyApplied(accountId, state, summary) {
   }
 
   if (accountId !== "shangshu" || summary.chainStage !== "DECISION") {
-    return false;
+    if (accountId !== AUDIT_ACCOUNT_ID || summary.chainStage !== "AUDIT") {
+      return false;
+    }
+
+    const verdict = normalizeAuditVerdict(summary);
+    if (verdict === "FAIL") {
+      return matchesExpectedState(
+        state,
+        "await_draft",
+        (summary.round ?? state.round) + 1,
+        ["silijian"],
+      );
+    }
+
+    return matchesExpectedState(state, "closed", summary.round ?? state.round, [], false);
   }
 
   if (normalizeDecisionStatus(summary) === "REVISE_NEXT_ROUND") {
@@ -418,7 +459,11 @@ function isInboundProgressAlreadyApplied(accountId, state, summary) {
     );
   }
 
-  return matchesExpectedState(state, "closed", summary.round ?? state.round, [], true);
+  if (normalizeDecisionStatus(summary) === "CONSENSUS_REACHED") {
+    return matchesExpectedState(state, "await_audit", summary.round ?? state.round, [AUDIT_ACCOUNT_ID]);
+  }
+
+  return matchesExpectedState(state, "closed", summary.round ?? state.round, [], false);
 }
 
 function getCoreSendViolation(accountId, state, summary) {
@@ -453,6 +498,13 @@ function getCoreSendViolation(accountId, state, summary) {
       return `invalid_decision_status:${decisionStatus}`;
     }
   }
+  if (accountId === AUDIT_ACCOUNT_ID) {
+    const auditVerdict = normalizeAuditVerdict(summary);
+    if (!auditVerdict) return "missing_audit_verdict";
+    if (!AUDIT_VERDICTS.has(auditVerdict)) {
+      return `invalid_audit_verdict:${auditVerdict}`;
+    }
+  }
   return "";
 }
 
@@ -478,7 +530,7 @@ function buildGuardPrompt(accountId, state, config) {
     "宣政殿守卫已切换到【三省回合制讨论模式】。",
     "目标：在有限轮次内，让中书省提案、门下省挑错、尚书省收敛，产出当前最优可行方案。",
     "你永远只能代表你自己的机构身份，绝不能把 sender/untrusted metadata 当成“你自己”。",
-    "这不是执行派单流程。禁止六部、御史台、秘阁、殿中省介入讨论闭环。",
+    "这不是执行派单流程。禁止六部、秘阁、殿中省介入讨论闭环；御史台只在尚书省形成共识后执行审计。",
     "禁止输出接案登记、状态板、归档、存档备查、等待提示、角色表演、总结转述。",
     "禁止任何工具调用、memory write、memory search、read/write/exec、技能调用与子代理调用。",
     "禁止代码块、禁止 Markdown 列表、禁止 [[reply_to_current]]、禁止补充说明段。",
@@ -523,6 +575,7 @@ function buildGuardPrompt(accountId, state, config) {
     lines.push(
       "第 1 轮：给出当前最优候选方案。后续轮：只根据门下省 objections 与尚书省 decision 做最小必要修订。",
     );
+    lines.push("思考角度：像总设计师，先搭骨架、定边界、定成败标准；优先回答“怎么做才成”。");
     lines.push(`第 1 行必须在结尾只交接给门下省：${neigeMention}`);
     lines.push("candidate_plan 必须压缩成 1 句，key_assumptions 最多 2 条，tradeoffs 最多 2 条。");
     lines.push(
@@ -536,6 +589,7 @@ function buildGuardPrompt(accountId, state, config) {
     lines.push(
       "如果方案仍有关键缺口，用 verdict=REVISE；如果已基本可行，用 verdict=APPROVED；若方向根本不成立，可用 verdict=VETO。",
     );
+    lines.push("思考角度：像反方评审与风险审计官，优先挑隐藏前提、断点、越权与不可逆代价。");
     lines.push(`第 1 行必须在结尾只交接给尚书省：${shangshuMention}`);
     lines.push("major_objections 最多 3 条，required_changes 最多 3 条，preserved_strengths 最多 2 条。");
     lines.push(
@@ -550,14 +604,29 @@ function buildGuardPrompt(accountId, state, config) {
       "你只能输出三种终局之一：REVISE_NEXT_ROUND、CONSENSUS_REACHED、ESCALATE_TO_HUMAN。",
     );
     lines.push(
-      "若继续下一轮，只能指出最小修订集；若达成共识，必须明确当前最优方案为何优于其他选项；若已无新增信息，升级给人类。",
+      "若继续下一轮，只能指出最小修订集；若达成共识，必须明确当前最优方案为何优于其他选项；若已无新增信息，请陛下裁断。",
     );
+    lines.push("思考角度：像总裁决者，比较“继续讨论的增益”与“立即定案的成本节省”，偏爱当前最优可行解。");
     lines.push(`若 status=REVISE_NEXT_ROUND，第 1 行必须在结尾只交接给中书省：${silijianMention}`);
     lines.push("若 status 是终局态，禁止任何 mention。");
     lines.push("decision_summary 与 selected_direction 都必须各压缩成 1 句，required_revisions 最多 3 条。");
     lines.push("next_round 必须是数字轮次；若继续下一轮，必须填写当前 round + 1；禁止写 agent 名。");
     lines.push(
       'JSON 必须包含：{"chain_stage":"DECISION","case_key","round","status","decision_summary","selected_direction","required_revisions","next_round"}。',
+    );
+    return lines.join("\n");
+  }
+
+  if (accountId === AUDIT_ACCOUNT_ID) {
+    lines.push("你的职责是做收敛后的真实性审计，不参与起草、挑错或裁决。");
+    lines.push("只有在尚书省已给出 CONSENSUS_REACHED 后，你才可审计并给出 PASS/FAIL。");
+    lines.push("若 verdict=PASS，表示当前方案边界清楚、证据足够、没有明显越权或伪完成。");
+    lines.push("若 verdict=FAIL，必须只指出最关键的证据缺口或越权点，并把案件退回中书省继续修订。");
+    lines.push(`若 verdict=FAIL，第 1 行必须在结尾只交接给中书省：${silijianMention}`);
+    lines.push("若 verdict=PASS，禁止任何 mention。");
+    lines.push("audit_summary 必须压缩成 1 句，evidence_refs 最多 3 条，required_fixes 最多 3 条。");
+    lines.push(
+      'JSON 必须包含：{"chain_stage":"AUDIT","case_key","round","verdict","audit_summary","evidence_refs","required_fixes","next_step"}。',
     );
     return lines.join("\n");
   }
@@ -612,7 +681,13 @@ function normalizeDecisionStatus(summary) {
   return summary.status || summary.verdict || "";
 }
 
-function buildCanonicalFormalPayload(accountId, summary) {
+function normalizeAuditVerdict(summary) {
+  const verdict = summary.verdict || summary.status || "";
+  if (verdict === "PASS" || verdict === "FAIL") return verdict;
+  return "";
+}
+
+function buildCanonicalFormalPayload(accountId, summary, state, config) {
   const expectedStage = getExpectedFormalStage(accountId);
   if (expectedStage && summary.chainStage && summary.chainStage !== expectedStage) {
     return null;
@@ -696,6 +771,38 @@ function buildCanonicalFormalPayload(accountId, summary) {
     };
   }
 
+  if (accountId === AUDIT_ACCOUNT_ID) {
+    const verdict = normalizeAuditVerdict(summary);
+    const shouldReturnToDraft =
+      verdict === "FAIL" && round < getEffectiveMaxRounds(state ?? createChannelState(), config);
+    return {
+      chain_stage: "AUDIT",
+      case_key: caseKey,
+      round,
+      verdict,
+      audit_summary: shortenText(
+        payload.audit_summary ?? payload.summary ?? payload.decision_summary,
+        110,
+      ),
+      evidence_refs: shortenList(
+        payload.evidence_refs ?? payload.evidence ?? payload.findings,
+        3,
+        64,
+      ),
+      required_fixes: shortenList(
+        payload.required_fixes ?? payload.required_changes ?? payload.objections,
+        3,
+        56,
+      ),
+      next_step:
+        verdict === "PASS"
+          ? "close_case"
+          : shouldReturnToDraft
+            ? "return_to_silijian"
+            : "await_imperial_review",
+    };
+  }
+
   return null;
 }
 
@@ -716,7 +823,7 @@ function formatTransitionMention(accountId, config) {
 }
 
 function buildCanonicalFormalContent(accountId, summary, config) {
-  const payload = buildCanonicalFormalPayload(accountId, summary);
+  const payload = buildCanonicalFormalPayload(accountId, summary, null, config);
   if (!payload) return "";
 
   const caseKey = summary.caseKey || "宣政殿待办";
@@ -729,6 +836,8 @@ function buildCanonicalFormalContent(accountId, summary, config) {
     shortLine = `【${caseKey}】门下省第${round}轮审议。`;
   } else if (accountId === "shangshu") {
     shortLine = `【${caseKey}】尚书省第${round}轮裁决：${payload.status || "PENDING"}。`;
+  } else if (accountId === AUDIT_ACCOUNT_ID) {
+    shortLine = `【${caseKey}】御史台审计：${payload.verdict || "PENDING"}。`;
   }
 
   let nextMention = "";
@@ -737,6 +846,8 @@ function buildCanonicalFormalContent(accountId, summary, config) {
   } else if (accountId === "neige") {
     nextMention = formatTransitionMention("shangshu", config);
   } else if (accountId === "shangshu" && payload.status === "REVISE_NEXT_ROUND") {
+    nextMention = formatTransitionMention("silijian", config);
+  } else if (accountId === AUDIT_ACCOUNT_ID && payload.verdict === "FAIL") {
     nextMention = formatTransitionMention("silijian", config);
   }
   if (nextMention) {
@@ -760,6 +871,8 @@ function buildRelayDirective(state, config, nextInbound) {
     action = `请尚书省裁决第${state.round}轮讨论。`;
   } else if (state.phase === "await_draft") {
     action = `请中书省起草第${state.round}轮修订案。`;
+  } else if (state.phase === "await_audit") {
+    action = `请御史台审计第${state.round}轮收敛结果。`;
   }
 
   return {
@@ -831,11 +944,25 @@ function inferDecisionStatusFromText(text) {
   if (/\bCONSENSUS_REACHED\b|达成共识|方案通过|准行|通过/iu.test(text)) {
     return "CONSENSUS_REACHED";
   }
-  if (/\bESCALATE_TO_HUMAN\b|升级给人类|升级至人类|待用户裁决|待人类裁决/iu.test(text)) {
+  if (
+    /\bESCALATE_TO_HUMAN\b|升级给人类|升级至人类|待用户裁决|待人类裁决|请陛下裁断|待陛下裁断|请吾皇裁断|待吾皇裁断|恭请圣裁/iu.test(
+      text,
+    )
+  ) {
     return "ESCALATE_TO_HUMAN";
   }
   if (/\bREVISE_NEXT_ROUND\b|继续讨论|下一轮|继续修订|再议一轮/iu.test(text)) {
     return "REVISE_NEXT_ROUND";
+  }
+  return "";
+}
+
+function inferAuditVerdictFromText(text) {
+  if (/\bFAIL\b|审计不通过|不予结案|退回三省|退回重议|需返修|存在越权|证据不足/iu.test(text)) {
+    return "FAIL";
+  }
+  if (/\bPASS\b|审计通过|准予结案|可以结案|通过审计/iu.test(text)) {
+    return "PASS";
   }
   return "";
 }
@@ -905,6 +1032,26 @@ function buildFallbackFormalSummary(accountId, rawText, state) {
     };
   }
 
+  if (accountId === AUDIT_ACCOUNT_ID) {
+    const verdict = inferAuditVerdictFromText(cleanedContent);
+    if (!verdict) return null;
+    return {
+      cleanedContent,
+      payload: {
+        audit_summary: shortenText(cleanedContent, 140),
+        evidence_refs: [],
+        required_fixes: [],
+      },
+      caseKey,
+      chainStage: "AUDIT",
+      verdict,
+      status: verdict,
+      round,
+      nextRound: verdict === "FAIL" ? round + 1 : null,
+      maxRounds: null,
+    };
+  }
+
   return null;
 }
 
@@ -970,7 +1117,7 @@ function setInitialInboundState(state, senderId, senderAccountId, inboundSummary
   };
 }
 
-function updateExpectedAccounts(state, accountId, summary) {
+function updateExpectedAccounts(state, accountId, summary, config) {
   state.pendingTurnReservations = {};
 
   if (accountId === "silijian") {
@@ -992,6 +1139,41 @@ function updateExpectedAccounts(state, accountId, summary) {
   if (accountId === "shangshu") {
     const decisionStatus = normalizeDecisionStatus(summary);
     if (decisionStatus === "REVISE_NEXT_ROUND") {
+      state.halted = false;
+      state.haltReason = "";
+      state.round += 1;
+      state.phase = "await_draft";
+      state.expectedAccounts = ["silijian"];
+      state.roundSpeakerCounts = {};
+      return;
+    }
+
+    if (decisionStatus === "CONSENSUS_REACHED") {
+      state.halted = false;
+      state.haltReason = "";
+      state.phase = "await_audit";
+      state.expectedAccounts = [AUDIT_ACCOUNT_ID];
+      return;
+    }
+
+    state.phase = "closed";
+    state.expectedAccounts = [];
+    state.halted = false;
+    state.haltReason = "";
+    return;
+  }
+
+  if (accountId === AUDIT_ACCOUNT_ID) {
+    const auditVerdict = normalizeAuditVerdict(summary);
+    if (auditVerdict === "FAIL") {
+      if (state.round >= getEffectiveMaxRounds(state, config)) {
+        state.phase = "closed";
+        state.expectedAccounts = [];
+        state.halted = false;
+        state.haltReason = "audit_failed_after_max_rounds";
+        return;
+      }
+
       state.halted = false;
       state.haltReason = "";
       state.round += 1;
@@ -1027,7 +1209,7 @@ export function createDatangChaotangGuard(rawConfig = {}) {
   function resetState(channelId, content, metadata = {}) {
     const summary = extractFormalEnvelope(content);
     const next = createChannelState(
-      summary.caseKey || extractCaseSummary(content),
+      summary.caseKey || buildAutoCaseKey(),
       summary.maxRounds,
     );
     next.caseStartMessageId = resolveInboundMessageId(metadata);
@@ -1094,7 +1276,7 @@ export function createDatangChaotangGuard(rawConfig = {}) {
     };
     const inboundSignature = buildInboundSignature(senderAccountId, nextInbound, event.metadata);
     if (!state.caseKey || state.caseKey === "宣政殿待办") {
-      state.caseKey = nextInbound.caseKey || extractCaseSummary(event.content);
+      state.caseKey = nextInbound.caseKey || buildAutoCaseKey();
     }
 
     if (hasSeenInboundSignature(state, inboundSignature)) {
@@ -1107,6 +1289,7 @@ export function createDatangChaotangGuard(rawConfig = {}) {
     }
 
     if (state.phase === "closed") {
+      state.lastInbound = nextInbound;
       rememberInboundSignature(state, inboundSignature);
       saveState(config.xuanzhengdianChannelId, state);
       logger?.info?.(
@@ -1117,7 +1300,7 @@ export function createDatangChaotangGuard(rawConfig = {}) {
       return;
     }
 
-    if (!isCoreThreeProvinceAccount(senderAccountId) || !inboundSummary.chainStage) {
+    if (!isGuardedFormalAccount(senderAccountId) || !inboundSummary.chainStage) {
       state.lastInbound = nextInbound;
       rememberInboundSignature(state, inboundSignature);
       saveState(config.xuanzhengdianChannelId, state);
@@ -1164,6 +1347,12 @@ export function createDatangChaotangGuard(rawConfig = {}) {
       state.round >= effectiveMaxRounds
     ) {
       inboundLimitViolation = "discussion_round_limit";
+    } else if (
+      senderAccountId === AUDIT_ACCOUNT_ID &&
+      normalizeAuditVerdict(inboundSummary) === "FAIL" &&
+      state.round >= effectiveMaxRounds
+    ) {
+      inboundLimitViolation = "audit_failed_after_max_rounds";
     }
 
     if (inboundLimitViolation) {
@@ -1183,7 +1372,7 @@ export function createDatangChaotangGuard(rawConfig = {}) {
     state.autoTurns = nextAutoTurns;
     state.speakerCounts[senderAccountId] = (state.speakerCounts[senderAccountId] ?? 0) + 1;
     state.roundSpeakerCounts[senderAccountId] = nextRoundSpeakerCount;
-    updateExpectedAccounts(state, senderAccountId, inboundSummary);
+    updateExpectedAccounts(state, senderAccountId, inboundSummary, config);
     state.lastInbound = nextInbound;
     rememberInboundSignature(state, inboundSignature);
     saveState(config.xuanzhengdianChannelId, state);
@@ -1264,7 +1453,7 @@ function handleBeforeMessageWrite(event, ctx, logger) {
       return scrubMessageForTranscript(event.message);
     }
 
-    if (event.message?.role !== "assistant" || !isCoreThreeProvinceAccount(accountId)) return;
+    if (event.message?.role !== "assistant" || !isGuardedFormalAccount(accountId)) return;
 
     const state = getState(config.xuanzhengdianChannelId);
     pruneExpiredTurnReservations(state);
@@ -1333,7 +1522,7 @@ function handleBeforeMessageWrite(event, ctx, logger) {
 
   function handleBeforeToolCall(event, ctx, logger) {
     const accountId = ctx.agentId ?? "";
-    if (!isCoreThreeProvinceAccount(accountId)) return;
+    if (!isGuardedFormalAccount(accountId)) return;
 
     const state = getState(config.xuanzhengdianChannelId);
     pruneExpiredTurnReservations(state);
@@ -1366,7 +1555,7 @@ function handleBeforeMessageWrite(event, ctx, logger) {
     pruneExpiredTurnReservations(state);
     const targetIsXuanzhengdian = isTargetConversation(event.to, config.xuanzhengdianChannelId);
     const guardAsActiveDiscussion =
-      isCoreThreeProvinceAccount(accountId) && hasActiveDiscussionState(state);
+      isGuardedFormalAccount(accountId) && hasActiveDiscussionState(state);
     const shouldGuardXuanzhengdianSend = targetIsXuanzhengdian || guardAsActiveDiscussion;
 
     if (targetIsXuanzhengdian || isCoreThreeProvinceAccount(accountId)) {
@@ -1428,7 +1617,7 @@ function handleBeforeMessageWrite(event, ctx, logger) {
       return { cancel: true };
     }
 
-    if (!isCoreThreeProvinceAccount(accountId)) {
+    if (!isGuardedFormalAccount(accountId)) {
       logger?.info?.(`${PLUGIN_ID}: blocked non-core account ${accountId} in xuanzhengdian`);
       return { cancel: true };
     }
@@ -1478,6 +1667,12 @@ function handleBeforeMessageWrite(event, ctx, logger) {
       state.round >= effectiveMaxRounds
     ) {
       violationReason = "discussion_round_limit";
+    } else if (
+      accountId === AUDIT_ACCOUNT_ID &&
+      normalizeAuditVerdict(normalizedSummary) === "FAIL" &&
+      state.round >= effectiveMaxRounds
+    ) {
+      violationReason = "audit_failed_after_max_rounds";
     }
 
     if (violationReason) {
@@ -1503,7 +1698,7 @@ function handleBeforeMessageWrite(event, ctx, logger) {
     if (normalizedSummary.caseKey) {
       state.caseKey = normalizedSummary.caseKey;
     }
-    updateExpectedAccounts(state, accountId, normalizedSummary);
+    updateExpectedAccounts(state, accountId, normalizedSummary, config);
     saveState(config.xuanzhengdianChannelId, state);
     if (normalizedContent !== event.content) {
       return { content: normalizedContent };

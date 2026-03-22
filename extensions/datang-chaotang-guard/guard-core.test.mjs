@@ -599,6 +599,316 @@ test("shangshu revise beyond max rounds escalates to human", () => {
 
   assert.equal(typeof result?.content, "string");
   assert.match(result.content, /ESCALATE_TO_HUMAN/);
+  assert.match(result.content, /待陛下裁断/);
+  assert.match(result.content, /"next_step":"await_imperial_reset"/);
+});
+
+test("duchayuan audits post-consensus and can reopen or close the case", () => {
+  const tempDir = makeTempDir();
+  const controlFile = path.join(tempDir, "control.json");
+  const stateFile = path.join(tempDir, "state.json");
+  writeJson(controlFile, { globalMute: false, lastAction: "unfreeze", accountSnapshot: {} });
+
+  const guard = createDatangChaotangGuard({ controlFile, stateFile, maxDiscussionRounds: 3 });
+  guard.handleMessageReceived(
+    {
+      from: "1482260425616789595",
+      content: [
+        "【审计闭环案-甲】请三省先收敛，再由御史台审计。",
+        JSON.stringify({ case_key: "审计闭环案-甲", max_rounds: 3 }),
+      ].join("\n"),
+      metadata: { senderId: "1476931252576850095", channelId: "1482260425616789595" },
+    },
+    { channelId: "discord", conversationId: "1482260425616789595" },
+    {},
+  );
+
+  assert.deepEqual(
+    guard.handleMessageSending(
+      {
+        to: "guild/1482260425616789595",
+        content: [
+          "御史台抢跑审计。",
+          JSON.stringify({
+            chain_stage: "AUDIT",
+            case_key: "审计闭环案-甲",
+            round: 1,
+            verdict: "FAIL",
+          }),
+        ].join("\n"),
+      },
+      { channelId: "discord", accountId: "duchayuan" },
+      {},
+    ),
+    { cancel: true },
+  );
+
+  const draftRound1 = unwrapForwardedContent(
+    guard.handleMessageSending(
+      {
+        to: "guild/1482260425616789595",
+        content: [
+          "中书省第 1 轮提案。",
+          JSON.stringify({
+            chain_stage: "DRAFT",
+            case_key: "审计闭环案-甲",
+            round: 1,
+            objective: "让御史台在收敛后进行真实性审计",
+            candidate_plan: "三省先收敛，御史台后审计",
+          }),
+        ].join("\n"),
+      },
+      { channelId: "discord", accountId: "silijian" },
+      {},
+    ),
+    "",
+  );
+  guard.handleMessageReceived(
+    {
+      from: "1482260425616789595",
+      content: draftRound1,
+      metadata: { senderId: "1482003317327659049", channelId: "1482260425616789595" },
+    },
+    { channelId: "discord", conversationId: "1482260425616789595" },
+    {},
+  );
+
+  const reviewRound1 = unwrapForwardedContent(
+    guard.handleMessageSending(
+      {
+        to: "guild/1482260425616789595",
+        content: [
+          "门下省第 1 轮审议。",
+          JSON.stringify({
+            chain_stage: "REVIEW",
+            case_key: "审计闭环案-甲",
+            round: 1,
+            verdict: "APPROVED",
+            major_objections: [],
+            required_changes: [],
+          }),
+        ].join("\n"),
+      },
+      { channelId: "discord", accountId: "neige" },
+      {},
+    ),
+    "",
+  );
+  guard.handleMessageReceived(
+    {
+      from: "1482260425616789595",
+      content: reviewRound1,
+      metadata: { senderId: "1482007277140709508", channelId: "1482260425616789595" },
+    },
+    { channelId: "discord", conversationId: "1482260425616789595" },
+    {},
+  );
+
+  const decisionRound1 = unwrapForwardedContent(
+    guard.handleMessageSending(
+      {
+        to: "guild/1482260425616789595",
+        content: [
+          "尚书省第 1 轮形成共识。",
+          JSON.stringify({
+            chain_stage: "DECISION",
+            case_key: "审计闭环案-甲",
+            round: 1,
+            status: "CONSENSUS_REACHED",
+            decision_summary: "先进入审计，再决定是否结案。",
+            selected_direction: "收敛后由御史台复核",
+          }),
+        ].join("\n"),
+      },
+      { channelId: "discord", accountId: "shangshu" },
+      {},
+    ),
+    "",
+  );
+  guard.handleMessageReceived(
+    {
+      from: "1482260425616789595",
+      content: decisionRound1,
+      metadata: { senderId: "1482262068760416317", channelId: "1482260425616789595" },
+    },
+    { channelId: "discord", conversationId: "1482260425616789595" },
+    {},
+  );
+
+  const awaitingAudit = guard.getStateForTest();
+  assert.equal(awaitingAudit.phase, "await_audit");
+  assert.deepEqual(awaitingAudit.expectedAccounts, ["duchayuan"]);
+
+  const auditFail = unwrapForwardedContent(
+    guard.handleMessageSending(
+      {
+        to: "guild/1482260425616789595",
+        content: [
+          "御史台审计不通过。",
+          JSON.stringify({
+            chain_stage: "AUDIT",
+            case_key: "审计闭环案-甲",
+            round: 1,
+            verdict: "FAIL",
+            audit_summary: "缺少可核查的验收依据，不能直接结案。",
+            evidence_refs: ["缺少验收标准", "缺少失败定义"],
+            required_fixes: ["补写验收标准", "补写失败退出条件"],
+          }),
+        ].join("\n"),
+      },
+      { channelId: "discord", accountId: "duchayuan" },
+      {},
+    ),
+    "",
+  );
+  assert.match(auditFail, /"chain_stage":"AUDIT"/);
+  assert.match(auditFail, /"verdict":"FAIL"/);
+  assert.match(auditFail, /1482003317327659049/);
+  guard.handleMessageReceived(
+    {
+      from: "1482260425616789595",
+      content: auditFail,
+      metadata: { senderId: "1482274763979096176", channelId: "1482260425616789595" },
+    },
+    { channelId: "discord", conversationId: "1482260425616789595" },
+    {},
+  );
+
+  const reopened = guard.getStateForTest();
+  assert.equal(reopened.phase, "await_draft");
+  assert.equal(reopened.round, 2);
+  assert.deepEqual(reopened.expectedAccounts, ["silijian"]);
+  assert.equal(reopened.lastInbound?.senderAccountId, "duchayuan");
+
+  const draftRound2 = unwrapForwardedContent(
+    guard.handleMessageSending(
+      {
+        to: "guild/1482260425616789595",
+        content: [
+          "中书省第 2 轮修订。",
+          JSON.stringify({
+            chain_stage: "DRAFT",
+            case_key: "审计闭环案-甲",
+            round: 2,
+            objective: "补齐审计依据后再收敛",
+            candidate_plan: "补入验收标准和失败退出条件",
+          }),
+        ].join("\n"),
+      },
+      { channelId: "discord", accountId: "silijian" },
+      {},
+    ),
+    "",
+  );
+  guard.handleMessageReceived(
+    {
+      from: "1482260425616789595",
+      content: draftRound2,
+      metadata: { senderId: "1482003317327659049", channelId: "1482260425616789595" },
+    },
+    { channelId: "discord", conversationId: "1482260425616789595" },
+    {},
+  );
+
+  const reviewRound2 = unwrapForwardedContent(
+    guard.handleMessageSending(
+      {
+        to: "guild/1482260425616789595",
+        content: [
+          "门下省第 2 轮审议。",
+          JSON.stringify({
+            chain_stage: "REVIEW",
+            case_key: "审计闭环案-甲",
+            round: 2,
+            verdict: "APPROVED",
+          }),
+        ].join("\n"),
+      },
+      { channelId: "discord", accountId: "neige" },
+      {},
+    ),
+    "",
+  );
+  guard.handleMessageReceived(
+    {
+      from: "1482260425616789595",
+      content: reviewRound2,
+      metadata: { senderId: "1482007277140709508", channelId: "1482260425616789595" },
+    },
+    { channelId: "discord", conversationId: "1482260425616789595" },
+    {},
+  );
+
+  const decisionRound2 = unwrapForwardedContent(
+    guard.handleMessageSending(
+      {
+        to: "guild/1482260425616789595",
+        content: [
+          "尚书省第 2 轮形成共识。",
+          JSON.stringify({
+            chain_stage: "DECISION",
+            case_key: "审计闭环案-甲",
+            round: 2,
+            status: "CONSENSUS_REACHED",
+            decision_summary: "已补齐审计关注点，可以复核结案。",
+            selected_direction: "补齐验收后再结案",
+          }),
+        ].join("\n"),
+      },
+      { channelId: "discord", accountId: "shangshu" },
+      {},
+    ),
+    "",
+  );
+  guard.handleMessageReceived(
+    {
+      from: "1482260425616789595",
+      content: decisionRound2,
+      metadata: { senderId: "1482262068760416317", channelId: "1482260425616789595" },
+    },
+    { channelId: "discord", conversationId: "1482260425616789595" },
+    {},
+  );
+
+  const auditPass = unwrapForwardedContent(
+    guard.handleMessageSending(
+      {
+        to: "guild/1482260425616789595",
+        content: [
+          "御史台审计通过。",
+          JSON.stringify({
+            chain_stage: "AUDIT",
+            case_key: "审计闭环案-甲",
+            round: 2,
+            verdict: "PASS",
+            audit_summary: "当前方案边界与验收标准已可核，准予结案。",
+            evidence_refs: ["验收标准已补齐", "失败退出条件已补齐"],
+            required_fixes: [],
+          }),
+        ].join("\n"),
+      },
+      { channelId: "discord", accountId: "duchayuan" },
+      {},
+    ),
+    "",
+  );
+  assert.match(auditPass, /"verdict":"PASS"/);
+  guard.handleMessageReceived(
+    {
+      from: "1482260425616789595",
+      content: auditPass,
+      metadata: { senderId: "1482274763979096176", channelId: "1482260425616789595" },
+    },
+    { channelId: "discord", conversationId: "1482260425616789595" },
+    {},
+  );
+
+  const closed = guard.getStateForTest();
+  assert.equal(closed.phase, "closed");
+  assert.deepEqual(closed.expectedAccounts, []);
+  assert.equal(closed.halted, false);
+  assert.equal(closed.lastInbound?.senderAccountId, "duchayuan");
+  assert.equal(closed.lastInbound?.status, "PASS");
 });
 
 test("formal outbound envelopes are compacted into single-message canonical payloads", () => {
@@ -1040,20 +1350,37 @@ test("late inbound after a closed case is ignored instead of flipping the case t
     {},
   );
 
-  const closedState = guard.getStateForTest();
-  assert.equal(closedState.phase, "closed");
-  assert.equal(closedState.halted, false);
-  assert.equal(closedState.haltReason, "");
-  assert.equal(closedState.lastInbound?.status, "CONSENSUS_REACHED");
+  const auditPass =
+    '【闭环演示案-终】御史台审计：PASS。\n{"chain_stage":"AUDIT","case_key":"闭环演示案-终","round":1,"verdict":"PASS","audit_summary":"当前方案边界清楚，可结案。","evidence_refs":["决策已收敛"],"required_fixes":[],"next_step":"close_case"}';
 
   guard.handleMessageReceived(
     {
       from: "1482260425616789595",
-      content: closingDecision,
+      content: auditPass,
       metadata: {
-        senderId: "1482262068760416317",
+        senderId: "1482274763979096176",
         channelId: "1482260425616789595",
         messageId: "104",
+      },
+    },
+    { channelId: "discord", conversationId: "1482260425616789595" },
+    {},
+  );
+
+  const closedState = guard.getStateForTest();
+  assert.equal(closedState.phase, "closed");
+  assert.equal(closedState.halted, false);
+  assert.equal(closedState.haltReason, "");
+  assert.equal(closedState.lastInbound?.status, "PASS");
+
+  guard.handleMessageReceived(
+    {
+      from: "1482260425616789595",
+      content: auditPass,
+      metadata: {
+        senderId: "1482274763979096176",
+        channelId: "1482260425616789595",
+        messageId: "105",
       },
     },
     { channelId: "discord", conversationId: "1482260425616789595" },
@@ -1064,7 +1391,7 @@ test("late inbound after a closed case is ignored instead of flipping the case t
   assert.equal(afterLateInbound.phase, "closed");
   assert.equal(afterLateInbound.halted, false);
   assert.equal(afterLateInbound.haltReason, "");
-  assert.equal(afterLateInbound.lastInbound?.status, "CONSENSUS_REACHED");
+  assert.equal(afterLateInbound.lastInbound?.status, "PASS");
 });
 
 test("duplicate assistant transcript is blocked before inbound progression", () => {
@@ -1693,4 +2020,27 @@ test("freeze and unfreeze toggle protected account enablement without restarting
   assert.equal(unfrozenConfig.channels.discord.accounts.silijian.enabled, true);
   assert.equal(unfrozenConfig.channels.discord.accounts.neige.enabled, true);
   assert.equal(unfrozenConfig.channels.discord.accounts.shangshu.enabled, false);
+});
+
+test("human reset without explicit case key auto-generates a case id", () => {
+  const tempDir = makeTempDir();
+  const controlFile = path.join(tempDir, "control.json");
+  const stateFile = path.join(tempDir, "state.json");
+  writeJson(controlFile, { globalMute: false, lastAction: "unfreeze", accountSnapshot: {} });
+
+  const guard = createDatangChaotangGuard({ controlFile, stateFile });
+  guard.handleMessageReceived(
+    {
+      from: "1482260425616789595",
+      content: "请三省围绕宣政殿当前调度方式讨论出最优可行方案。请中书省先起草。<@&1482261624973819988>",
+      metadata: { senderId: "1476931252576850095", channelId: "1482260425616789595" },
+    },
+    { channelId: "discord", conversationId: "1482260425616789595" },
+    {},
+  );
+
+  const state = guard.getStateForTest();
+  assert.match(state.caseKey, /^宣案-\d{8}-\d{6}$/);
+  assert.equal(state.phase, "await_draft");
+  assert.equal(state.lastInbound?.caseKey, state.caseKey);
 });
