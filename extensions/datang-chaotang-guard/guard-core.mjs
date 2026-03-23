@@ -26,6 +26,7 @@ const HANYUANDIAN_ALLOWED_ACCOUNTS = new Set([
   "shangshu",
 ]);
 const HANYUANDIAN_REPORT_ACCOUNTS = new Set(["silijian", "neige", "shangshu"]);
+const HANYUANDIAN_REPORT_ORDER = ["silijian", "neige", "shangshu"];
 const HANYUANDIAN_TRIGGER_REGEX = /上朝|早朝|点卯|點卯|朝会|朝會|含元殿上朝|开始点卯|開始點卯/u;
 const DECISION_STATUSES = new Set([
   "REVISE_NEXT_ROUND",
@@ -63,6 +64,7 @@ function createHanyuandianState() {
     caseStartMessageId: "",
     expectedAccounts: [],
     speakerCounts: {},
+    pendingSpeakerReservations: {},
     lastInbound: null,
     recentInboundSignatures: [],
     haltReason: "",
@@ -173,6 +175,7 @@ function normalizeStoredHanyuandianState(value) {
       ? value.caseStartMessageId.trim()
       : "";
   next.speakerCounts = normalizeStoredCounterMap(value.speakerCounts);
+  next.pendingSpeakerReservations = normalizeStoredCounterMap(value.pendingSpeakerReservations);
   next.lastInbound = normalizeStoredInbound(value.lastInbound);
   next.recentInboundSignatures = Array.isArray(value.recentInboundSignatures)
     ? value.recentInboundSignatures.filter((entry) => typeof entry === "string" && entry.trim())
@@ -220,6 +223,53 @@ function hasActiveHanyuandianRollcall(state) {
   return Boolean(
     state &&
       (state.phase === "await_rollcall_open" || state.phase === "await_rollcall_reports"),
+  );
+}
+
+function shouldGuardHanyuandianSession(state) {
+  return Boolean(
+    state &&
+      (state.phase === "await_rollcall_open" ||
+        state.phase === "await_rollcall_reports" ||
+        state.phase === "closed"),
+  );
+}
+
+function pruneExpiredHanyuandianReservations(state, now = Date.now()) {
+  const reservations =
+    state.pendingSpeakerReservations && typeof state.pendingSpeakerReservations === "object"
+      ? state.pendingSpeakerReservations
+      : {};
+  const next = {};
+  for (const [accountId, reservedAtMs] of Object.entries(reservations)) {
+    if (!Number.isInteger(reservedAtMs) || reservedAtMs <= 0) continue;
+    if (now - reservedAtMs >= ASSISTANT_TURN_RESERVATION_TTL_MS) continue;
+    next[accountId] = reservedAtMs;
+  }
+  state.pendingSpeakerReservations = next;
+}
+
+function hasHanyuandianReservation(state, accountId, now = Date.now()) {
+  pruneExpiredHanyuandianReservations(state, now);
+  return Number.isInteger(state.pendingSpeakerReservations?.[accountId]);
+}
+
+function rememberHanyuandianReservation(state, accountId, now = Date.now()) {
+  pruneExpiredHanyuandianReservations(state, now);
+  state.pendingSpeakerReservations[accountId] = now;
+}
+
+function clearHanyuandianReservation(state, accountId) {
+  if (!state.pendingSpeakerReservations || typeof state.pendingSpeakerReservations !== "object") {
+    state.pendingSpeakerReservations = {};
+    return;
+  }
+  delete state.pendingSpeakerReservations[accountId];
+}
+
+function getNextHanyuandianExpectedAccount(state) {
+  return (
+    HANYUANDIAN_REPORT_ORDER.find((accountId) => (state.speakerCounts[accountId] ?? 0) < 1) || ""
   );
 }
 
@@ -935,8 +985,35 @@ function containsForbiddenHanyuandianTerms(text) {
   );
 }
 
+function containsAnyHanyuandianRoleMention(text, config) {
+  const normalized = String(text ?? "");
+  return getHanyuandianRoleMentions(config).some((mention) => normalized.includes(mention));
+}
+
+function containsForbiddenHanyuandianReportTerms(text, config) {
+  const normalized = stripFormattingNoise(text);
+  if (!normalized) return false;
+  return (
+    containsAnyHanyuandianRoleMention(normalized, config) ||
+    /殿中监|殿中監|高力士|点卯|點卯|点名|點名|在否|待喏|待奏|应喏|應喏|恭候|依次应|依次應|速速应|速速應|晚朝已开|早朝开始|卯时已到|卯時已到|会齐|會齊|奏事呈上/u.test(
+      normalized,
+    )
+  );
+}
+
+function buildCanonicalHanyuandianRollcallContent(config) {
+  const roleMentions = getHanyuandianRoleMentions(config);
+  if (roleMentions.length !== 3) return "";
+  return [
+    "含元殿已开朝，开始点卯。",
+    `${roleMentions[0]} 请报当值、活跃案数、阻塞异常、是否需上呈。`,
+    `${roleMentions[1]} 请报当值、活跃案数、阻塞异常、是否需上呈。`,
+    `${roleMentions[2]} 请报当值、活跃案数、阻塞异常、是否需上呈。`,
+  ].join("\n");
+}
+
 function buildHanyuandianGuardPrompt(accountId, state, config) {
-  if (!hasActiveHanyuandianRollcall(state)) return "";
+  if (!shouldGuardHanyuandianSession(state)) return "";
 
   const roleMentions = getHanyuandianRoleMentions(config).join(" ");
   const lines = [
@@ -978,11 +1055,24 @@ function buildHanyuandianGuardPrompt(accountId, state, config) {
       return lines.join("\n");
     }
 
+    if (!state.expectedAccounts.includes(accountId)) {
+      lines.push("当前尚未轮到你应卯。你必须静默等待。");
+      lines.push("你只能输出且只输出：NO_REPLY");
+      return lines.join("\n");
+    }
+
     lines.push("高力士已经开朝。你现在只能代表本省应卯回报。");
     lines.push("你只能汇报：当值、活跃案数、阻塞异常、是否需上呈。");
+    lines.push("当前只许你一省应卯，其他两省尚未轮到。");
     lines.push("禁止重新点卯，禁止重新点名三省，禁止主持朝会，禁止安排他省先后。");
-    lines.push("禁止使用三个 role mention，禁止输出宣案/会签/提案/审议/裁决。");
+    lines.push("禁止提及高力士，禁止带任何三省 role mention，禁止输出宣案/会签/提案/审议/裁决。");
     lines.push("输出控制在一小段正式回报内。");
+    return lines.join("\n");
+  }
+
+  if (state.phase === "closed") {
+    lines.push("本轮点卯已结束。除非陛下再次发起点卯，否则你必须静默。");
+    lines.push("你只能输出且只输出：NO_REPLY");
     return lines.join("\n");
   }
 
@@ -1464,8 +1554,9 @@ export function createDatangChaotangGuard(rawConfig = {}) {
     };
 
     if (state.phase === "await_rollcall_open" && senderAccountId === "dianzhongsheng") {
+      clearHanyuandianReservation(state, senderAccountId);
       state.phase = "await_rollcall_reports";
-      state.expectedAccounts = ["silijian", "neige", "shangshu"];
+      state.expectedAccounts = [HANYUANDIAN_REPORT_ORDER[0]];
       state.speakerCounts.dianzhongsheng = 1;
       rememberInboundSignature(state, inboundSignature);
       saveHanyuandianState(HANYUANDIAN_CHANNEL_ID, state);
@@ -1474,11 +1565,22 @@ export function createDatangChaotangGuard(rawConfig = {}) {
     }
 
     if (state.phase === "await_rollcall_reports" && HANYUANDIAN_REPORT_ACCOUNTS.has(senderAccountId)) {
-      state.speakerCounts[senderAccountId] = (state.speakerCounts[senderAccountId] ?? 0) + 1;
-      state.expectedAccounts = ["silijian", "neige", "shangshu"].filter(
-        (accountId) => (state.speakerCounts[accountId] ?? 0) < 1,
-      );
-      if (state.expectedAccounts.length === 0) {
+      if (!state.expectedAccounts.includes(senderAccountId)) {
+        rememberInboundSignature(state, inboundSignature);
+        saveHanyuandianState(HANYUANDIAN_CHANNEL_ID, state);
+        logger?.info?.(
+          `${PLUGIN_ID}: ignored out-of-turn hanyuandian report sender=${senderAccountId} expected=${
+            state.expectedAccounts.join(",") || "(none)"
+          }`,
+        );
+        return;
+      }
+
+      clearHanyuandianReservation(state, senderAccountId);
+      state.speakerCounts[senderAccountId] = 1;
+      const nextExpected = getNextHanyuandianExpectedAccount(state);
+      state.expectedAccounts = nextExpected ? [nextExpected] : [];
+      if (!nextExpected) {
         state.phase = "closed";
         state.haltReason = "rollcall_complete";
       }
@@ -1676,7 +1778,7 @@ export function createDatangChaotangGuard(rawConfig = {}) {
 
     if (isTargetSessionForChannel(ctx, config, HANYUANDIAN_CHANNEL_ID)) {
       const hanyuandianState = getHanyuandianState(HANYUANDIAN_CHANNEL_ID);
-      if (!hasActiveHanyuandianRollcall(hanyuandianState)) return;
+      if (!shouldGuardHanyuandianSession(hanyuandianState)) return;
       logger?.info?.(
         `${PLUGIN_ID}: before_agent_start hanyuandian account=${accountId} phase=${hanyuandianState.phase} expected=${
           hanyuandianState.expectedAccounts.join(",") || "(none)"
@@ -1728,7 +1830,7 @@ export function createDatangChaotangGuard(rawConfig = {}) {
 
     if (isTargetSessionForChannel(ctx, config, HANYUANDIAN_CHANNEL_ID)) {
       const hanyuandianState = getHanyuandianState(HANYUANDIAN_CHANNEL_ID);
-      if (!hasActiveHanyuandianRollcall(hanyuandianState)) return;
+      if (!shouldGuardHanyuandianSession(hanyuandianState)) return;
       logger?.info?.(
         `${PLUGIN_ID}: before_prompt_build hanyuandian account=${accountId} phase=${hanyuandianState.phase} expected=${
           hanyuandianState.expectedAccounts.join(",") || "(none)"
@@ -1864,6 +1966,7 @@ function handleBeforeMessageWrite(event, ctx, logger) {
     const state = getState(config.xuanzhengdianChannelId);
     const hanyuandianState = getHanyuandianState(HANYUANDIAN_CHANNEL_ID);
     pruneExpiredTurnReservations(state);
+    pruneExpiredHanyuandianReservations(hanyuandianState);
     const targetIsXuanzhengdian = isTargetConversation(event.to, config.xuanzhengdianChannelId);
     const targetIsHanyuandian = isTargetConversation(event.to, HANYUANDIAN_CHANNEL_ID);
     const guardAsActiveDiscussion =
@@ -1928,7 +2031,13 @@ function handleBeforeMessageWrite(event, ctx, logger) {
           );
           return { cancel: true };
         }
-        return;
+        if (hasHanyuandianReservation(hanyuandianState, accountId)) {
+          logger?.info?.(`${PLUGIN_ID}: blocked duplicate hanyuandian open account=${accountId}`);
+          return { cancel: true };
+        }
+        rememberHanyuandianReservation(hanyuandianState, accountId);
+        saveHanyuandianState(HANYUANDIAN_CHANNEL_ID, hanyuandianState);
+        return { content: buildCanonicalHanyuandianRollcallContent(config) };
       }
 
       if (hanyuandianState.phase === "await_rollcall_reports") {
@@ -1942,8 +2051,24 @@ function handleBeforeMessageWrite(event, ctx, logger) {
           return { cancel: true };
         }
 
+        if (!hanyuandianState.expectedAccounts.includes(accountId)) {
+          logger?.info?.(
+            `${PLUGIN_ID}: blocked out-of-turn hanyuandian report account=${accountId} expected=${
+              hanyuandianState.expectedAccounts.join(",") || "(none)"
+            }`,
+          );
+          return { cancel: true };
+        }
+
         if ((hanyuandianState.speakerCounts[accountId] ?? 0) >= 1) {
           logger?.info?.(`${PLUGIN_ID}: blocked duplicate hanyuandian report account=${accountId}`);
+          return { cancel: true };
+        }
+
+        if (hasHanyuandianReservation(hanyuandianState, accountId)) {
+          logger?.info?.(
+            `${PLUGIN_ID}: blocked reserved hanyuandian report account=${accountId}`,
+          );
           return { cancel: true };
         }
 
@@ -1960,17 +2085,22 @@ function handleBeforeMessageWrite(event, ctx, logger) {
           );
           return { cancel: true };
         }
+
+        if (containsForbiddenHanyuandianReportTerms(outboundText, config)) {
+          logger?.info?.(
+            `${PLUGIN_ID}: blocked malformed hanyuandian report account=${accountId}`,
+          );
+          return { cancel: true };
+        }
+
+        rememberHanyuandianReservation(hanyuandianState, accountId);
+        saveHanyuandianState(HANYUANDIAN_CHANNEL_ID, hanyuandianState);
         return;
       }
 
-      if (
-        (hanyuandianState.phase === "idle" || hanyuandianState.phase === "closed") &&
-        accountId !== "dianzhongsheng" &&
-        (looksLikeHanyuandianLeadershipText(outboundText, config) ||
-          containsForbiddenHanyuandianTerms(outboundText))
-      ) {
+      if (hanyuandianState.phase === "idle" || hanyuandianState.phase === "closed") {
         logger?.info?.(
-          `${PLUGIN_ID}: blocked stray hanyuandian leadership account=${accountId} phase=${hanyuandianState.phase}`,
+          `${PLUGIN_ID}: blocked inactive hanyuandian outbound account=${accountId} phase=${hanyuandianState.phase}`,
         );
         return { cancel: true };
       }

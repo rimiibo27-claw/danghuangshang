@@ -88,7 +88,7 @@ test("hanyuandian rollcall only allows dianzhongsheng to lead and provinces to r
     "<@&1482266062102728789> 请报当值、活跃案数、阻塞异常、是否需上呈。",
   ].join("\n");
 
-  assert.equal(
+  assert.deepEqual(
     guard.handleMessageSending(
       {
         to: "guild/1482260119457632359",
@@ -97,7 +97,7 @@ test("hanyuandian rollcall only allows dianzhongsheng to lead and provinces to r
       { channelId: "discord", accountId: "dianzhongsheng" },
       {},
     ),
-    undefined,
+    { content: dianzhongshengRollcall },
   );
 
   const blockedImperialToneRollcall = guard.handleMessageSending(
@@ -134,7 +134,19 @@ test("hanyuandian rollcall only allows dianzhongsheng to lead and provinces to r
     {},
   );
   assert.match(silijianReportPrompt.appendSystemContext, /只能代表本省应卯回报/);
+  assert.match(silijianReportPrompt.appendSystemContext, /当前只许你一省应卯/);
   assert.match(silijianReportPrompt.appendSystemContext, /禁止重新点卯/);
+
+  const neigePreflight = guard.handleBeforePromptBuild(
+    { prompt: "含元殿消息", messages: [] },
+    {
+      agentId: "neige",
+      channelId: "discord",
+      sessionKey: "agent:neige:discord:channel:1482260119457632359",
+    },
+    {},
+  );
+  assert.match(neigePreflight.appendSystemContext, /NO_REPLY/);
 
   const blockedSilijianReRollcall = guard.handleMessageSending(
     {
@@ -171,6 +183,113 @@ test("hanyuandian rollcall only allows dianzhongsheng to lead and provinces to r
     ),
     undefined,
   );
+
+  const blockedSilijianDuplicateReport = guard.handleMessageSending(
+    {
+      to: "guild/1482260119457632359",
+      content: "中书省应卯：当值 1，活跃案数 0，阻塞异常无，暂不需上呈。",
+    },
+    { channelId: "discord", accountId: "silijian" },
+    {},
+  );
+  assert.deepEqual(blockedSilijianDuplicateReport, { cancel: true });
+
+  const blockedNeigeOutOfTurn = guard.handleMessageSending(
+    {
+      to: "guild/1482260119457632359",
+      content: "门下省应卯：当值 1，活跃案数 0，阻塞异常无，暂不需上呈。",
+    },
+    { channelId: "discord", accountId: "neige" },
+    {},
+  );
+  assert.deepEqual(blockedNeigeOutOfTurn, { cancel: true });
+
+  guard.handleMessageReceived(
+    {
+      from: "1482260119457632359",
+      content: "中书省应卯：当值 1，活跃案数 0，阻塞异常无，暂不需上呈。",
+      metadata: { senderId: "1482003317327659049", channelId: "1482260119457632359" },
+    },
+    { channelId: "discord", conversationId: "1482260119457632359" },
+    {},
+  );
+
+  const neigeReportPrompt = guard.handleBeforePromptBuild(
+    { prompt: "含元殿消息", messages: [] },
+    {
+      agentId: "neige",
+      channelId: "discord",
+      sessionKey: "agent:neige:discord:channel:1482260119457632359",
+    },
+    {},
+  );
+  assert.match(neigeReportPrompt.appendSystemContext, /只能代表本省应卯回报/);
+
+  assert.equal(
+    guard.handleMessageSending(
+      {
+        to: "guild/1482260119457632359",
+        content: "门下省应卯：当值 1，活跃案数 0，阻塞异常无，暂不需上呈。",
+      },
+      { channelId: "discord", accountId: "neige" },
+      {},
+    ),
+    undefined,
+  );
+
+  guard.handleMessageReceived(
+    {
+      from: "1482260119457632359",
+      content: "门下省应卯：当值 1，活跃案数 0，阻塞异常无，暂不需上呈。",
+      metadata: { senderId: "1482007277140709508", channelId: "1482260119457632359" },
+    },
+    { channelId: "discord", conversationId: "1482260119457632359" },
+    {},
+  );
+
+  assert.equal(
+    guard.handleMessageSending(
+      {
+        to: "guild/1482260119457632359",
+        content: "尚书省应卯：当值 1，活跃案数 0，阻塞异常无，暂不需上呈。",
+      },
+      { channelId: "discord", accountId: "shangshu" },
+      {},
+    ),
+    undefined,
+  );
+
+  guard.handleMessageReceived(
+    {
+      from: "1482260119457632359",
+      content: "尚书省应卯：当值 1，活跃案数 0，阻塞异常无，暂不需上呈。",
+      metadata: { senderId: "1482262068760416317", channelId: "1482260119457632359" },
+    },
+    { channelId: "discord", conversationId: "1482260119457632359" },
+    {},
+  );
+
+  const silijianClosedPrompt = guard.handleBeforePromptBuild(
+    { prompt: "含元殿消息", messages: [] },
+    {
+      agentId: "silijian",
+      channelId: "discord",
+      sessionKey: "agent:silijian:discord:channel:1482260119457632359",
+    },
+    {},
+  );
+  assert.match(silijianClosedPrompt.appendSystemContext, /本轮点卯已结束/);
+  assert.match(silijianClosedPrompt.appendSystemContext, /NO_REPLY/);
+
+  const blockedClosedReport = guard.handleMessageSending(
+    {
+      to: "guild/1482260119457632359",
+      content: "中书省补报：当值 1，活跃案数 0，阻塞异常无，暂不需上呈。",
+    },
+    { channelId: "discord", accountId: "silijian" },
+    {},
+  );
+  assert.deepEqual(blockedClosedReport, { cancel: true });
 });
 
 test("xuanzhengdian guard enforces round-based three-province discussion", () => {
