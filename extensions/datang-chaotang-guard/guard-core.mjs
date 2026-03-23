@@ -761,9 +761,20 @@ function resolveOutgoingAccountId(ctx, event) {
   if (typeof ctx?.accountId === "string" && ctx.accountId.trim()) {
     return ctx.accountId.trim();
   }
+  if (typeof ctx?.agentId === "string" && ctx.agentId.trim()) {
+    return ctx.agentId.trim();
+  }
+  const directAccountId = event?.accountId;
+  if (typeof directAccountId === "string" && directAccountId.trim()) {
+    return directAccountId.trim();
+  }
   const metadataAccountId = event?.metadata?.accountId;
   if (typeof metadataAccountId === "string" && metadataAccountId.trim()) {
     return metadataAccountId.trim();
+  }
+  const metadataAgentId = event?.metadata?.agentId;
+  if (typeof metadataAgentId === "string" && metadataAgentId.trim()) {
+    return metadataAgentId.trim();
   }
   return "";
 }

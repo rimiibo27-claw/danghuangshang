@@ -204,6 +204,16 @@ test("hanyuandian rollcall only allows dianzhongsheng to lead and provinces to r
   );
   assert.deepEqual(blockedNeigeOutOfTurn, { cancel: true });
 
+  const blockedShangshuOutOfTurnByAgentId = guard.handleMessageSending(
+    {
+      to: "guild/1482260119457632359",
+      content: "尚书省应卯：当值 1，活跃案数 0，阻塞异常无，暂不需上呈。",
+    },
+    { channelId: "discord", agentId: "shangshu" },
+    {},
+  );
+  assert.deepEqual(blockedShangshuOutOfTurnByAgentId, { cancel: true });
+
   guard.handleMessageReceived(
     {
       from: "1482260119457632359",
@@ -295,10 +305,12 @@ test("hanyuandian rollcall only allows dianzhongsheng to lead and provinces to r
 test("xuanzhengdian guard enforces round-based three-province discussion", () => {
   const tempDir = makeTempDir();
   const controlFile = path.join(tempDir, "control.json");
+  const stateFile = path.join(tempDir, "state.json");
   writeJson(controlFile, { globalMute: false, lastAction: "unfreeze", accountSnapshot: {} });
 
   const guard = createDatangChaotangGuard({
     controlFile,
+    stateFile,
     maxDiscussionRounds: 3,
     maxDiscussionTurns: 9,
     xuanzhengdianBlockedAccounts: [
@@ -680,10 +692,12 @@ test("xuanzhengdian guard enforces round-based three-province discussion", () =>
 test("shangshu revise beyond max rounds escalates to human", () => {
   const tempDir = makeTempDir();
   const controlFile = path.join(tempDir, "control.json");
+  const stateFile = path.join(tempDir, "state.json");
   writeJson(controlFile, { globalMute: false, lastAction: "unfreeze", accountSnapshot: {} });
 
   const guard = createDatangChaotangGuard({
     controlFile,
+    stateFile,
     maxDiscussionRounds: 2,
     maxDiscussionTurns: 6,
   });
@@ -1170,9 +1184,10 @@ test("duchayuan audits post-consensus and can reopen or close the case", () => {
 test("formal outbound envelopes are compacted into single-message canonical payloads", () => {
   const tempDir = makeTempDir();
   const controlFile = path.join(tempDir, "control.json");
+  const stateFile = path.join(tempDir, "state.json");
   writeJson(controlFile, { globalMute: false, lastAction: "unfreeze", accountSnapshot: {} });
 
-  const guard = createDatangChaotangGuard({ controlFile });
+  const guard = createDatangChaotangGuard({ controlFile, stateFile });
   guard.handleMessageReceived(
     {
       from: "1482260425616789595",
@@ -1285,9 +1300,10 @@ test("formal outbound envelopes are compacted into single-message canonical payl
 test("active xuanzhengdian case guards core outbound even when target string is ambiguous", () => {
   const tempDir = makeTempDir();
   const controlFile = path.join(tempDir, "control.json");
+  const stateFile = path.join(tempDir, "state.json");
   writeJson(controlFile, { globalMute: false, lastAction: "unfreeze", accountSnapshot: {} });
 
-  const guard = createDatangChaotangGuard({ controlFile });
+  const guard = createDatangChaotangGuard({ controlFile, stateFile });
   guard.handleMessageReceived(
     {
       from: "1482260425616789595",
@@ -2152,7 +2168,12 @@ test("explicit wrong-stage assistant transcript is blocked instead of canonicali
 });
 
 test("provider-prefixed discord channel ids still enforce guarded outbound validation", () => {
-  const guard = createDatangChaotangGuard({});
+  const tempDir = makeTempDir();
+  const controlFile = path.join(tempDir, "control.json");
+  const stateFile = path.join(tempDir, "state.json");
+  writeJson(controlFile, { globalMute: false, lastAction: "unfreeze", accountSnapshot: {} });
+
+  const guard = createDatangChaotangGuard({ controlFile, stateFile });
   guard.handleMessageReceived(
     {
       from: "1482260425616789595",
