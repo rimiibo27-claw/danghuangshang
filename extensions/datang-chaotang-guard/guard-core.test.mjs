@@ -36,6 +36,143 @@ test("global mute cancels protected account sends before channel-specific rules"
   assert.deepEqual(result, { cancel: true });
 });
 
+test("hanyuandian rollcall only allows dianzhongsheng to lead and provinces to report", () => {
+  const tempDir = makeTempDir();
+  const controlFile = path.join(tempDir, "control.json");
+  const stateFile = path.join(tempDir, "state.json");
+  writeJson(controlFile, { globalMute: false, lastAction: "unfreeze", accountSnapshot: {} });
+
+  const guard = createDatangChaotangGuard({
+    controlFile,
+    stateFile,
+  });
+
+  guard.handleMessageReceived(
+    {
+      from: "1482260119457632359",
+      content: "@殿中监·高力士 开始点卯",
+      metadata: { senderId: "1476931252576850095", channelId: "1482260119457632359" },
+    },
+    { channelId: "discord", conversationId: "1482260119457632359" },
+    {},
+  );
+
+  const silijianPreflight = guard.handleBeforeAgentStart(
+    { prompt: "含元殿消息", messages: [] },
+    {
+      agentId: "silijian",
+      channelId: "discord",
+      sessionKey: "agent:silijian:discord:channel:1482260119457632359",
+    },
+    {},
+  );
+  assert.match(silijianPreflight.appendSystemContext, /NO_REPLY/);
+
+  const blockedSilijianLead = guard.handleMessageSending(
+    {
+      to: "guild/1482260119457632359",
+      content: [
+        "中书省今日值守，由本令主持开局。",
+        "<@&1482261624973819988> <@&1482262714431836183> <@&1482266062102728789>",
+      ].join("\n"),
+    },
+    { channelId: "discord", accountId: "silijian" },
+    {},
+  );
+  assert.deepEqual(blockedSilijianLead, { cancel: true });
+
+  const dianzhongshengRollcall = [
+    "含元殿已开朝，开始点卯。",
+    "<@&1482261624973819988> 请报当值、活跃案数、阻塞异常、是否需上呈。",
+    "<@&1482262714431836183> 请报当值、活跃案数、阻塞异常、是否需上呈。",
+    "<@&1482266062102728789> 请报当值、活跃案数、阻塞异常、是否需上呈。",
+  ].join("\n");
+
+  assert.equal(
+    guard.handleMessageSending(
+      {
+        to: "guild/1482260119457632359",
+        content: dianzhongshengRollcall,
+      },
+      { channelId: "discord", accountId: "dianzhongsheng" },
+      {},
+    ),
+    undefined,
+  );
+
+  const blockedImperialToneRollcall = guard.handleMessageSending(
+    {
+      to: "guild/1482260119457632359",
+      content: [
+        "朕已御殿，三省会签开始。",
+        "<@&1482261624973819988> <@&1482262714431836183> <@&1482266062102728789>",
+        "各衙门依次奏事。",
+      ].join("\n"),
+    },
+    { channelId: "discord", accountId: "dianzhongsheng" },
+    {},
+  );
+  assert.deepEqual(blockedImperialToneRollcall, { cancel: true });
+
+  guard.handleMessageReceived(
+    {
+      from: "1482260119457632359",
+      content: dianzhongshengRollcall,
+      metadata: { senderId: "1482276648069107753", channelId: "1482260119457632359" },
+    },
+    { channelId: "discord", conversationId: "1482260119457632359" },
+    {},
+  );
+
+  const silijianReportPrompt = guard.handleBeforePromptBuild(
+    { prompt: "含元殿消息", messages: [] },
+    {
+      agentId: "silijian",
+      channelId: "discord",
+      sessionKey: "agent:silijian:discord:channel:1482260119457632359",
+    },
+    {},
+  );
+  assert.match(silijianReportPrompt.appendSystemContext, /只能代表本省应卯回报/);
+  assert.match(silijianReportPrompt.appendSystemContext, /禁止重新点卯/);
+
+  const blockedSilijianReRollcall = guard.handleMessageSending(
+    {
+      to: "guild/1482260119457632359",
+      content: [
+        "【宣案-20260323-084115】中书省奏事。",
+        "提案已拟，待门下省审议、尚书省裁决。",
+        "<@&1482261624973819988> <@&1482262714431836183> <@&1482266062102728789>",
+      ].join("\n"),
+    },
+    { channelId: "discord", accountId: "silijian" },
+    {},
+  );
+  assert.deepEqual(blockedSilijianReRollcall, { cancel: true });
+
+  const blockedSilijianLeadClaim = guard.handleMessageSending(
+    {
+      to: "guild/1482260119457632359",
+      content: "中书省今日值守，由本令主持开局。@殿中监·高力士 负责殿中秩序维护，请协同确认点卯开始。",
+    },
+    { channelId: "discord", accountId: "silijian" },
+    {},
+  );
+  assert.deepEqual(blockedSilijianLeadClaim, { cancel: true });
+
+  assert.equal(
+    guard.handleMessageSending(
+      {
+        to: "guild/1482260119457632359",
+        content: "中书省应卯：当值 1，活跃案数 0，阻塞异常无，暂不需上呈。",
+      },
+      { channelId: "discord", accountId: "silijian" },
+      {},
+    ),
+    undefined,
+  );
+});
+
 test("xuanzhengdian guard enforces round-based three-province discussion", () => {
   const tempDir = makeTempDir();
   const controlFile = path.join(tempDir, "control.json");
