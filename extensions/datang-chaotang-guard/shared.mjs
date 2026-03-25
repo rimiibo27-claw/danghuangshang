@@ -72,6 +72,13 @@ export const DEFAULT_STATE_FILE = path.join(
   "control",
   "datang-chaotang-guard-state.json",
 );
+export const DEFAULT_ROLLCALL_ARCHIVES_ROOT = path.join(
+  os.homedir(),
+  "Documents",
+  "todo_claw",
+  "datang-runtime-archives",
+);
+export const DEFAULT_ROLLCALL_WORKSPACE_ROOT = path.join(os.homedir(), ".openclaw");
 
 function uniqueStrings(values) {
   return [...new Set(values.map((value) => String(value).trim()).filter(Boolean))];
@@ -180,6 +187,14 @@ export function resolvePluginConfig(rawConfig = {}) {
     xuanzhengdianModelOverride: asTrimmedString(
       rawConfig.xuanzhengdianModelOverride,
       DEFAULT_XUANZHENGDIAN_MODEL_OVERRIDE,
+    ),
+    rollcallArchivesRoot: asTrimmedString(
+      rawConfig.rollcallArchivesRoot,
+      DEFAULT_ROLLCALL_ARCHIVES_ROOT,
+    ),
+    rollcallWorkspaceRoot: asTrimmedString(
+      rawConfig.rollcallWorkspaceRoot,
+      DEFAULT_ROLLCALL_WORKSPACE_ROOT,
     ),
   };
 }

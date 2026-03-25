@@ -21,6 +21,38 @@ function unwrapForwardedContent(result, fallbackContent) {
   return typeof result?.content === "string" ? result.content : fallbackContent;
 }
 
+function writeText(filePath, text) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, text, "utf8");
+}
+
+function writeAssistantSession(filePath, text) {
+  const lines = [
+    JSON.stringify({ type: "session", version: 3, id: path.basename(filePath, ".jsonl") }),
+    JSON.stringify({
+      type: "message",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text }],
+      },
+    }),
+  ].join("\n");
+  writeText(filePath, `${lines}\n`);
+}
+
+function extractTextFromMessageContentForTest(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((item) =>
+      item && typeof item === "object" && item.type === "text" && typeof item.text === "string"
+        ? item.text
+        : "",
+    )
+    .filter(Boolean)
+    .join("\n");
+}
+
 test("global mute cancels protected account sends before channel-specific rules", () => {
   const tempDir = makeTempDir();
   const controlFile = path.join(tempDir, "control.json");
@@ -36,7 +68,117 @@ test("global mute cancels protected account sends before channel-specific rules"
   assert.deepEqual(result, { cancel: true });
 });
 
-test("hanyuandian rollcall only allows dianzhongsheng to lead and provinces to report", () => {
+test("hanyuandian rollcall only allows the hosted digest to pass publicly", () => {
+  const tempDir = makeTempDir();
+  const controlFile = path.join(tempDir, "control.json");
+  const stateFile = path.join(tempDir, "state.json");
+  const archivesRoot = path.join(tempDir, "archives");
+  const workspaceRoot = path.join(tempDir, "workspace");
+  writeJson(controlFile, { globalMute: false, lastAction: "unfreeze", accountSnapshot: {} });
+
+  writeAssistantSession(
+    path.join(archivesRoot, "2026-03-24T15-29-26.361Z", "sessions", "silijian", "a.jsonl"),
+    "中书省近办：已补齐三省回合制草案边界。运转无异常。最可称道者是把收敛与停机条件写实了。尚需殿中省协调后续验收档期。",
+  );
+  writeAssistantSession(
+    path.join(archivesRoot, "2026-03-24T15-29-26.361Z", "sessions", "shangshu", "b.jsonl"),
+    "尚书省近办：已把 CONSENSUS 与升级边界定清。运转无异常。最为可喜者是终局判据不再含混。暂无需协调。",
+  );
+  writeText(
+    path.join(workspaceRoot, "workspace-neige", "memory", "2026-03-24.md"),
+    "# 2026-03-24\n\n近来主要在复审越序发言与假闭环问题。\n",
+  );
+
+  const guard = createDatangChaotangGuard({
+    controlFile,
+    stateFile,
+    rollcallArchivesRoot: archivesRoot,
+    rollcallWorkspaceRoot: workspaceRoot,
+  });
+
+  const trigger = guard.handleMessageReceived(
+    {
+      from: "1482260119457632359",
+      content: "点卯",
+      metadata: { senderId: "1476931252576850095", channelId: "1482260119457632359" },
+    },
+    { channelId: "discord", conversationId: "1482260119457632359" },
+    {},
+  );
+
+  assert.equal(trigger?.relay?.accountId, "dianzhongsheng");
+
+  const blockedRelay = guard.handleMessageSending(
+    {
+      to: "guild/1482260119457632359",
+      content: trigger?.relay?.content ?? "",
+    },
+    { channelId: "discord", accountId: "dianzhongsheng" },
+    {},
+  );
+  assert.deepEqual(blockedRelay, { cancel: true });
+
+  const digestContent = guard.buildHostedHanyuandianRollcallContent({
+    dianzhongsheng: {
+      recent: "已将含元殿点卯收束为单主持代奏。",
+      issue: "暂无明显异常。",
+      pride: "点卯不再失控群聊。",
+      coordination: "待陛下再赐真实朝务。",
+    },
+    silijian: {
+      recent: "已补齐三省回合制草案边界。",
+      issue: "暂无明显异常。",
+      pride: "收敛与停机条件写实。",
+      coordination: "待后续验收档期协调。",
+    },
+    neige: {
+      recent: "复审越序发言与假闭环问题。",
+      issue: "暂无明显异常。",
+      pride: "已把关键积弊逐一摘出。",
+      coordination: "待陛下赐真实议题。",
+    },
+    shangshu: {
+      recent: "已把CONSENSUS与升级边界定清。",
+      issue: "暂无明显异常。",
+      pride: "终局判据不再含混。",
+      coordination: "暂无需协调。",
+    },
+    duchayuan: {
+      recent: "独立审计闸门已上线。",
+      issue: "真实执行链样本仍少。",
+      pride: "PASS/FAIL已入守卫回归。",
+      coordination: "待后续真验收校准口径。",
+    },
+  });
+
+  const hosted = guard.handleMessageSending(
+    {
+      to: "guild/1482260119457632359",
+      content: digestContent,
+    },
+    { channelId: "discord", accountId: "dianzhongsheng" },
+    {},
+  );
+
+  assert.match(hosted?.content ?? "", /含元殿已开朝。今日点卯由殿中省代奏在值官员近况。/);
+  assert.match(hosted?.content ?? "", /【殿中省·高力士】/);
+  assert.match(hosted?.content ?? "", /【中书省·苏绰】/);
+  assert.match(hosted?.content ?? "", /已补齐三省回合制草案边界/);
+  assert.match(hosted?.content ?? "", /【门下省·魏徵】/);
+  assert.match(hosted?.content ?? "", /复审越序发言与假闭环问题/);
+  assert.match(hosted?.content ?? "", /【尚书省·裴耀卿】/);
+  assert.match(hosted?.content ?? "", /CONSENSUS与升级边界定清/);
+  assert.match(hosted?.content ?? "", /【御史台·海瑞】/);
+  assert.match(hosted?.content ?? "", /含元殿点卯已毕。诸司各归本署，有本启奏，无本退朝。/);
+
+  guard.acknowledgeHostedHanyuandianPublish(hosted?.content ?? "", {});
+
+  const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+  assert.equal(state.channels["1482260119457632359"].phase, "closed");
+  assert.equal(state.channels["1482260119457632359"].haltReason, "rollcall_complete");
+});
+
+test("hanyuandian blocks all non-host public follow-ups during and after rollcall", () => {
   const tempDir = makeTempDir();
   const controlFile = path.join(tempDir, "control.json");
   const stateFile = path.join(tempDir, "state.json");
@@ -45,19 +187,21 @@ test("hanyuandian rollcall only allows dianzhongsheng to lead and provinces to r
   const guard = createDatangChaotangGuard({
     controlFile,
     stateFile,
+    rollcallArchivesRoot: path.join(tempDir, "archives"),
+    rollcallWorkspaceRoot: path.join(tempDir, "workspace"),
   });
 
   guard.handleMessageReceived(
     {
       from: "1482260119457632359",
-      content: "@殿中监·高力士 开始点卯",
+      content: "点卯",
       metadata: { senderId: "1476931252576850095", channelId: "1482260119457632359" },
     },
     { channelId: "discord", conversationId: "1482260119457632359" },
     {},
   );
 
-  const silijianPreflight = guard.handleBeforeAgentStart(
+  const silijianPrompt = guard.handleBeforePromptBuild(
     { prompt: "含元殿消息", messages: [] },
     {
       agentId: "silijian",
@@ -66,79 +210,25 @@ test("hanyuandian rollcall only allows dianzhongsheng to lead and provinces to r
     },
     {},
   );
-  assert.match(silijianPreflight.appendSystemContext, /NO_REPLY/);
+  assert.match(silijianPrompt.appendSystemContext, /殿中省单主持代奏/);
 
-  const blockedSilijianLead = guard.handleMessageSending(
+  const blockedSilijian = guard.handleMessageSending(
     {
       to: "guild/1482260119457632359",
-      content: [
-        "中书省今日值守，由本令主持开局。",
-        "<@&1482261624973819988> <@&1482262714431836183> <@&1482266062102728789>",
-      ].join("\n"),
+      content: "中书省补报：诸务如常。",
     },
     { channelId: "discord", accountId: "silijian" },
     {},
   );
-  assert.deepEqual(blockedSilijianLead, { cancel: true });
+  assert.deepEqual(blockedSilijian, { cancel: true });
 
-  const dianzhongshengRollcall = [
-    "含元殿已开朝，开始点卯。",
-    "<@&1482261624973819988> 请报当值、活跃案数、阻塞异常、是否需上呈。",
-    "<@&1482262714431836183> 请报当值、活跃案数、阻塞异常、是否需上呈。",
-    "<@&1482266062102728789> 请报当值、活跃案数、阻塞异常、是否需上呈。",
-  ].join("\n");
-
-  assert.deepEqual(
-    guard.handleMessageSending(
-      {
-        to: "guild/1482260119457632359",
-        content: dianzhongshengRollcall,
+  const blockedTranscript = guard.handleBeforeMessageWrite(
+    {
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "门下省补报：诸务如常。" }],
       },
-      { channelId: "discord", accountId: "dianzhongsheng" },
-      {},
-    ),
-    { content: dianzhongshengRollcall },
-  );
-
-  const blockedImperialToneRollcall = guard.handleMessageSending(
-    {
-      to: "guild/1482260119457632359",
-      content: [
-        "朕已御殿，三省会签开始。",
-        "<@&1482261624973819988> <@&1482262714431836183> <@&1482266062102728789>",
-        "各衙门依次奏事。",
-      ].join("\n"),
     },
-    { channelId: "discord", accountId: "dianzhongsheng" },
-    {},
-  );
-  assert.deepEqual(blockedImperialToneRollcall, { cancel: true });
-
-  guard.handleMessageReceived(
-    {
-      from: "1482260119457632359",
-      content: dianzhongshengRollcall,
-      metadata: { senderId: "1482276648069107753", channelId: "1482260119457632359" },
-    },
-    { channelId: "discord", conversationId: "1482260119457632359" },
-    {},
-  );
-
-  const silijianReportPrompt = guard.handleBeforePromptBuild(
-    { prompt: "含元殿消息", messages: [] },
-    {
-      agentId: "silijian",
-      channelId: "discord",
-      sessionKey: "agent:silijian:discord:channel:1482260119457632359",
-    },
-    {},
-  );
-  assert.match(silijianReportPrompt.appendSystemContext, /只能代表本省应卯回报/);
-  assert.match(silijianReportPrompt.appendSystemContext, /当前只许你一省应卯/);
-  assert.match(silijianReportPrompt.appendSystemContext, /禁止重新点卯/);
-
-  const neigePreflight = guard.handleBeforePromptBuild(
-    { prompt: "含元殿消息", messages: [] },
     {
       agentId: "neige",
       channelId: "discord",
@@ -146,160 +236,72 @@ test("hanyuandian rollcall only allows dianzhongsheng to lead and provinces to r
     },
     {},
   );
-  assert.match(neigePreflight.appendSystemContext, /NO_REPLY/);
+  assert.deepEqual(blockedTranscript, { block: true });
+});
 
-  const blockedSilijianReRollcall = guard.handleMessageSending(
-    {
-      to: "guild/1482260119457632359",
-      content: [
-        "【宣案-20260323-084115】中书省奏事。",
-        "提案已拟，待门下省审议、尚书省裁决。",
-        "<@&1482261624973819988> <@&1482262714431836183> <@&1482266062102728789>",
-      ].join("\n"),
-    },
-    { channelId: "discord", accountId: "silijian" },
-    {},
-  );
-  assert.deepEqual(blockedSilijianReRollcall, { cancel: true });
+test("hanyuandian host transcript is blocked unless it is a hosted digest", () => {
+  const tempDir = makeTempDir();
+  const controlFile = path.join(tempDir, "control.json");
+  const stateFile = path.join(tempDir, "state.json");
+  writeJson(controlFile, { globalMute: false, lastAction: "unfreeze", accountSnapshot: {} });
 
-  const blockedSilijianLeadClaim = guard.handleMessageSending(
-    {
-      to: "guild/1482260119457632359",
-      content: "中书省今日值守，由本令主持开局。@殿中监·高力士 负责殿中秩序维护，请协同确认点卯开始。",
-    },
-    { channelId: "discord", accountId: "silijian" },
-    {},
-  );
-  assert.deepEqual(blockedSilijianLeadClaim, { cancel: true });
-
-  assert.equal(
-    guard.handleMessageSending(
-      {
-        to: "guild/1482260119457632359",
-        content: "中书省应卯：当值 1，活跃案数 0，阻塞异常无，暂不需上呈。",
-      },
-      { channelId: "discord", accountId: "silijian" },
-      {},
-    ),
-    undefined,
-  );
-
-  const blockedSilijianDuplicateReport = guard.handleMessageSending(
-    {
-      to: "guild/1482260119457632359",
-      content: "中书省应卯：当值 1，活跃案数 0，阻塞异常无，暂不需上呈。",
-    },
-    { channelId: "discord", accountId: "silijian" },
-    {},
-  );
-  assert.deepEqual(blockedSilijianDuplicateReport, { cancel: true });
-
-  const blockedNeigeOutOfTurn = guard.handleMessageSending(
-    {
-      to: "guild/1482260119457632359",
-      content: "门下省应卯：当值 1，活跃案数 0，阻塞异常无，暂不需上呈。",
-    },
-    { channelId: "discord", accountId: "neige" },
-    {},
-  );
-  assert.deepEqual(blockedNeigeOutOfTurn, { cancel: true });
-
-  const blockedShangshuOutOfTurnByAgentId = guard.handleMessageSending(
-    {
-      to: "guild/1482260119457632359",
-      content: "尚书省应卯：当值 1，活跃案数 0，阻塞异常无，暂不需上呈。",
-    },
-    { channelId: "discord", agentId: "shangshu" },
-    {},
-  );
-  assert.deepEqual(blockedShangshuOutOfTurnByAgentId, { cancel: true });
+  const guard = createDatangChaotangGuard({
+    controlFile,
+    stateFile,
+    rollcallArchivesRoot: path.join(tempDir, "archives"),
+    rollcallWorkspaceRoot: path.join(tempDir, "workspace"),
+  });
 
   guard.handleMessageReceived(
     {
       from: "1482260119457632359",
-      content: "中书省应卯：当值 1，活跃案数 0，阻塞异常无，暂不需上呈。",
-      metadata: { senderId: "1482003317327659049", channelId: "1482260119457632359" },
+      content: "开始点卯",
+      metadata: { senderId: "1476931252576850095", channelId: "1482260119457632359" },
     },
     { channelId: "discord", conversationId: "1482260119457632359" },
     {},
   );
 
-  const neigeReportPrompt = guard.handleBeforePromptBuild(
-    { prompt: "含元殿消息", messages: [] },
+  const transcript = guard.handleBeforeMessageWrite(
     {
-      agentId: "neige",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "含元殿已开朝。" }],
+      },
+    },
+    {
+      agentId: "dianzhongsheng",
       channelId: "discord",
-      sessionKey: "agent:neige:discord:channel:1482260119457632359",
+      sessionKey: "agent:dianzhongsheng:discord:channel:1482260119457632359",
     },
     {},
   );
-  assert.match(neigeReportPrompt.appendSystemContext, /只能代表本省应卯回报/);
+  assert.deepEqual(transcript, { block: true });
 
-  assert.equal(
-    guard.handleMessageSending(
-      {
-        to: "guild/1482260119457632359",
-        content: "门下省应卯：当值 1，活跃案数 0，阻塞异常无，暂不需上呈。",
+  const digestTranscript = guard.handleBeforeMessageWrite(
+    {
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text:
+              "含元殿已开朝。今日点卯由殿中省代奏在值官员近况。\n\n【殿中省·高力士】\n最近所办：主持。\n当前异常：无。\n最可骄之处：稳。\n需协调：无。",
+          },
+        ],
       },
-      { channelId: "discord", accountId: "neige" },
-      {},
-    ),
-    undefined,
-  );
-
-  guard.handleMessageReceived(
-    {
-      from: "1482260119457632359",
-      content: "门下省应卯：当值 1，活跃案数 0，阻塞异常无，暂不需上呈。",
-      metadata: { senderId: "1482007277140709508", channelId: "1482260119457632359" },
     },
-    { channelId: "discord", conversationId: "1482260119457632359" },
-    {},
-  );
-
-  assert.equal(
-    guard.handleMessageSending(
-      {
-        to: "guild/1482260119457632359",
-        content: "尚书省应卯：当值 1，活跃案数 0，阻塞异常无，暂不需上呈。",
-      },
-      { channelId: "discord", accountId: "shangshu" },
-      {},
-    ),
-    undefined,
-  );
-
-  guard.handleMessageReceived(
     {
-      from: "1482260119457632359",
-      content: "尚书省应卯：当值 1，活跃案数 0，阻塞异常无，暂不需上呈。",
-      metadata: { senderId: "1482262068760416317", channelId: "1482260119457632359" },
-    },
-    { channelId: "discord", conversationId: "1482260119457632359" },
-    {},
-  );
-
-  const silijianClosedPrompt = guard.handleBeforePromptBuild(
-    { prompt: "含元殿消息", messages: [] },
-    {
-      agentId: "silijian",
+      agentId: "dianzhongsheng",
       channelId: "discord",
-      sessionKey: "agent:silijian:discord:channel:1482260119457632359",
+      sessionKey: "agent:dianzhongsheng:discord:channel:1482260119457632359",
     },
     {},
   );
-  assert.match(silijianClosedPrompt.appendSystemContext, /本轮点卯已结束/);
-  assert.match(silijianClosedPrompt.appendSystemContext, /NO_REPLY/);
-
-  const blockedClosedReport = guard.handleMessageSending(
-    {
-      to: "guild/1482260119457632359",
-      content: "中书省补报：当值 1，活跃案数 0，阻塞异常无，暂不需上呈。",
-    },
-    { channelId: "discord", accountId: "silijian" },
-    {},
+  assert.match(
+    extractTextFromMessageContentForTest(digestTranscript.message.content),
+    /含元殿已开朝。今日点卯由殿中省代奏在值官员近况。/,
   );
-  assert.deepEqual(blockedClosedReport, { cancel: true });
 });
 
 test("xuanzhengdian guard enforces round-based three-province discussion", () => {
@@ -2211,7 +2213,12 @@ test("provider-prefixed discord channel ids still enforce guarded outbound valid
 });
 
 test("provider-prefixed discord channel ids do not leak explicit wrong-stage outbound", () => {
-  const guard = createDatangChaotangGuard({});
+  const tempDir = makeTempDir();
+  const controlFile = path.join(tempDir, "control.json");
+  const stateFile = path.join(tempDir, "state.json");
+  writeJson(controlFile, { globalMute: false, lastAction: "unfreeze", accountSnapshot: {} });
+
+  const guard = createDatangChaotangGuard({ controlFile, stateFile });
   guard.handleMessageReceived(
     {
       from: "1482260425616789595",
